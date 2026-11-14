@@ -1,5 +1,5 @@
-import { cellAt, localPoint, planMission, walkMinutes } from './mission.ts';
-import type { Cell, Leg, LocalPoint, Route, Terrain } from './mission.ts';
+import { cellAt, DEFAULT_ROUTING, estimateReserve, localPoint, planMission, RESERVE_EPSILON, walkMinutes } from './mission.ts';
+import type { Cell, Leg, LocalPoint, ReserveSettings, Route, RoutePriority, RoutingSettings, Terrain } from './mission.ts';
 
 export const stations = [
   { id: 'station-1', name: 'Ground Station 1', point: { x: 445, y: 655 }, detail: 'Scenario checkpoint north of the direct traverse.' },
@@ -47,16 +47,18 @@ function joinLegs(first: Leg, second: Leg): Leg {
   };
 }
 
-export function missionRoutes(terrain: Terrain, slopes: (number | null)[], start: Cell, target: Cell) {
-  const direct = planMission(terrain, slopes, start, target);
+export function missionRoutes(
+  terrain: Terrain, slopes: (number | null)[], start: Cell, target: Cell, settings = DEFAULT_ROUTING,
+) {
+  const direct = planMission(terrain, slopes, start, target, settings);
   if ('error' in direct) return { error: direct.error, options: [] as RouteOption[] };
   const options: RouteOption[] = [{ ...direct, id: 'direct', code: 'A', name: 'Direct route', color: '#62e7d2' }];
-  const profiles = [{ code: 'B', color: '#78b9ff' }, { code: 'C', color: '#ffab70' }] as const;
+  const profiles = [{ code: 'B', color: '#78b9ff' }, { code: 'C', color: '#c6c7f5' }] as const;
 
   stations.forEach((station, index) => {
     const via = cellAt(terrain, station.point);
-    const first = planMission(terrain, slopes, start, via);
-    const second = planMission(terrain, slopes, via, target);
+    const first = planMission(terrain, slopes, start, via, settings);
+    const second = planMission(terrain, slopes, via, target, settings);
     if ('error' in first || 'error' in second) return;
 
     const out = joinLegs(first.out, second.out);
@@ -74,6 +76,26 @@ export function missionRoutes(terrain: Terrain, slopes: (number | null)[], start
     });
   });
   return { options, error: null };
+}
+
+export function compareRoutes(
+  routes: RouteOption[], stopMinutes: number, delay: number, settings: ReserveSettings, priority: RoutePriority,
+) {
+  const options = routes.map((route) => {
+    const distanceM = route.out.distanceM + route.back.distanceM;
+    const reserve = estimateReserve(distanceM, stopMinutes, delay, settings);
+    return { route, distanceM, reserve, maxSlope: Math.max(route.out.maxSlope, route.back.maxSlope) };
+  });
+  const eligible = options.filter(({ reserve }) => reserve.margin >= -RESERVE_EPSILON);
+  // Mission time and reserve are both monotonic in distance at the modeled constant pace.
+  const recommended = eligible.reduce<(typeof options)[number] | undefined>((best, option) => {
+    if (!best) return option;
+    if (priority === 'gentler' && Math.abs(option.maxSlope - best.maxSlope) > RESERVE_EPSILON) {
+      return option.maxSlope < best.maxSlope ? option : best;
+    }
+    return option.distanceM < best.distanceM ? option : best;
+  }, undefined);
+  return { options, recommended };
 }
 
 export function cameraLocation(terrain: Terrain, stop: (typeof cameraStops)[number]) {

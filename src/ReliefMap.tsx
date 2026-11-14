@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { PersonStanding } from 'lucide-react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
-import { routeColor, slopeImage } from './TerrainMap';
+import { routeColor, routeOutline, slopeImage } from './TerrainMap';
 import type { MapProps } from './TerrainMap';
 import { cellAt, cellCenter, displayPosition, localPoint } from './mission';
 import type { LocalPoint } from './mission';
@@ -100,13 +101,16 @@ function fetchOverview() {
 }
 
 export default function ReliefMap(props: Props) {
-  const { terrain, scope, expanded, layer, opacity, slopes, start, target, activeLeg, activeDirection, showRover,
-    inspection, command, mode, onFallback, routes, selectedRoute, stopTime, onSelectRoute } = props;
+  const { terrain, scope, expanded, layer, opacity, slopes, slopeLimit, start, target, activeLeg, activeDirection, showRover,
+    activeColor, activeDashed, evaPoint, evaPoints, shelterPins, inspection, command, mode, onFallback, routes, selectedRoute, stopTime, onSelectRoute } = props;
   const callbacks = useRef(props);
   callbacks.current = props;
   const container = useRef<HTMLDivElement>(null);
   const handle = useRef<SceneHandle | null>(null);
   const labelElements = useRef(new Map<RouteId, HTMLButtonElement>());
+  const shelterElements = useRef(new Map<string, HTMLDivElement>());
+  const astronautElement = useRef<HTMLDivElement>(null);
+  const astronautAnchor = useRef<THREE.Vector3 | null>(null);
   const [overview, setOverview] = useState<OverviewElevation>();
   const [failure, setFailure] = useState('');
   const [ready, setReady] = useState(false);
@@ -134,6 +138,15 @@ export default function ReliefMap(props: Props) {
   }, [scope, grid, frame, routes, terrain]);
   const labelAnchors = useRef(labels);
   labelAnchors.current = labels;
+  const shelterLabels = useMemo(() => {
+    if (scope !== 'traverse' || !grid || !frame) return [];
+    return shelterPins.flatMap(({ id, point }) => {
+      const elevation = sampleElevation(grid, frame, point);
+      return elevation === null ? [] : [{ id, position: new THREE.Vector3(...worldPoint(frame, point, elevation)) }];
+    });
+  }, [shelterPins, scope, grid, frame]);
+  const shelterAnchors = useRef(shelterLabels);
+  shelterAnchors.current = shelterLabels;
 
   useEffect(() => {
     const element = container.current;
@@ -238,20 +251,29 @@ export default function ReliefMap(props: Props) {
     handle.current = { mesh, drawings, camera, controls, resize, reset };
     setReady(true);
     const projected = new THREE.Vector3();
+    function placeLabel(label: HTMLElement, position: THREE.Vector3) {
+      projected.copy(position).project(camera);
+      const x = (projected.x + 1) * element!.clientWidth / 2;
+      const y = (1 - projected.y) * element!.clientHeight / 2;
+      label.style.visibility = projected.z < 1 && projected.z > -1 &&
+        x >= 0 && x <= element!.clientWidth && y >= 0 && y <= element!.clientHeight ? 'visible' : 'hidden';
+      label.style.left = `${x}px`;
+      label.style.top = `${y}px`;
+    }
     renderer.setAnimationLoop(() => {
       controls.update();
       render();
       for (const { id, position } of labelAnchors.current) {
         const label = labelElements.current.get(id);
-        if (!label) continue;
-        projected.copy(position).project(camera);
-        const x = (projected.x + 1) * element.clientWidth / 2;
-        const y = (1 - projected.y) * element.clientHeight / 2;
-        label.style.visibility = projected.z < 1 && projected.z > -1 &&
-          x >= 0 && x <= element.clientWidth && y >= 0 && y <= element.clientHeight ? 'visible' : 'hidden';
-        label.style.left = `${x}px`;
-        label.style.top = `${y}px`;
+        if (label) placeLabel(label, position);
       }
+      for (const { id, position } of shelterAnchors.current) {
+        const label = shelterElements.current.get(id);
+        if (label) placeLabel(label, position);
+      }
+      const astronaut = astronautElement.current;
+      if (astronaut && astronautAnchor.current) placeLabel(astronaut, astronautAnchor.current);
+      else if (astronaut) astronaut.style.visibility = 'hidden';
     });
 
     return () => {
@@ -287,7 +309,7 @@ export default function ReliefMap(props: Props) {
     const loader = new THREE.ImageLoader();
     const base = loader.loadAsync(asset(panorama[scope]));
     const overlay = scope === 'traverse' && layer !== 'optical'
-      ? loader.loadAsync(layer === 'thermal' ? asset('thermal.webp') : slopeImage(terrain, slopes))
+      ? loader.loadAsync(layer === 'thermal' ? asset('thermal.webp') : slopeImage(terrain, slopes, slopeLimit))
       : Promise.resolve(null);
     void Promise.all([base, overlay]).then(([image, extra]) => {
       if (disposed) return;
@@ -314,7 +336,7 @@ export default function ReliefMap(props: Props) {
         texture.dispose();
       }
     };
-  }, [frame, scope, layer, terrain, slopes, opacity]);
+  }, [frame, scope, layer, terrain, slopes, slopeLimit, opacity]);
 
   useEffect(() => {
     const scene = handle.current;
@@ -335,7 +357,7 @@ export default function ReliefMap(props: Props) {
       marker.position.set(...position);
       scene!.drawings.add(marker);
     }
-    function trace(points: LocalPoint[], color: string, dashed = false, width = 3.5, offset = 0.42) {
+    function trace(points: LocalPoint[], color: string, dashed = false, width = 3.5, offset = 0.42, renderOrder = 0) {
       const positions: number[] = [];
       const addPoint = (point: LocalPoint) => {
         const position = drape(point, offset);
@@ -354,6 +376,7 @@ export default function ReliefMap(props: Props) {
         color, linewidth: width, dashed, dashSize: 0.72, gapSize: 0.48, depthWrite: false,
       }));
       line.computeLineDistances();
+      line.renderOrder = renderOrder;
       scene!.drawings.add(line);
     }
     if (showRover && scope !== 'crater') {
@@ -362,18 +385,19 @@ export default function ReliefMap(props: Props) {
       }
     }
     if (scope === 'traverse') {
-      for (const route of routes) {
-        if (route.id === selectedRoute) continue;
-        trace(route[activeDirection].path.map((cell) => cellCenter(terrain, cell)), route.color, true, 2.8);
+      if (!evaPoints) {
+        for (const route of routes) {
+          if (route.id === selectedRoute) continue;
+          trace(route[activeDirection].path.map((cell) => cellCenter(terrain, cell)), route.color, true, 2.8);
+        }
       }
       for (const route of routes) {
         if (route.waypoint) pin(route.waypoint, route.color, 0.65);
       }
-      const selection = routes.find((route) => route.id === selectedRoute);
-      if (activeLeg && selection) {
-        const points = activeLeg.path.map((cell) => cellCenter(terrain, cell));
-        trace(points, '#101a29', false, 6, 0.58);
-        trace(points, selection.color, activeDirection === 'back', 4, 0.65);
+      const points = evaPoints ?? activeLeg?.path.map((cell) => cellCenter(terrain, cell));
+      if (points) {
+        trace(points, routeOutline, false, 8, 0.65, 1);
+        trace(points, activeColor ?? routeColor[activeDirection], activeDashed, 4.6, 0.65, 2);
       }
       pin(cellCenter(terrain, start), routeColor.out, 1);
       pin(cellCenter(terrain, target), routeColor.back, 1);
@@ -383,7 +407,15 @@ export default function ReliefMap(props: Props) {
       if (scope === 'region') pin(localPoint(terrain, terrain.positions.science), routeColor.back, 0.65);
     }
     if (inspection) pin(inspection, '#ffffff', 0.55);
-  }, [frame, grid, terrain, start, target, activeLeg, activeDirection, showRover, inspection, scope, routes, selectedRoute]);
+  }, [frame, grid, terrain, start, target, activeLeg, activeDirection, activeColor, activeDashed, showRover, inspection, scope, routes, selectedRoute, evaPoints]);
+
+  useEffect(() => {
+    astronautAnchor.current = null;
+    if (!evaPoint || !frame || !grid || scope !== 'traverse') return;
+    const elevation = sampleElevation(grid, frame, evaPoint);
+    if (elevation === null) return;
+    astronautAnchor.current = new THREE.Vector3(...worldPoint(frame, evaPoint, elevation));
+  }, [frame, grid, scope, evaPoint]);
 
   useEffect(() => {
     const scene = handle.current;
@@ -401,7 +433,7 @@ export default function ReliefMap(props: Props) {
 
   return <>
     <div ref={container} className={`terrain-relief${mode ? ' terrain-map--pick' : ''}`} />
-    {ready && !failure && !mode && scope === 'traverse' && <div className="relief-route-labels">
+    {ready && !failure && !mode && !evaPoint && scope === 'traverse' && <div className="relief-route-labels">
       {routes.map((route) => {
         const minutes = arrivalMinutes(route, activeDirection, stopTime);
         const destination = activeDirection === 'out' ? 'Stop' : 'Base';
@@ -414,6 +446,18 @@ export default function ReliefMap(props: Props) {
         </button>;
       })}
     </div>}
+    {ready && !failure && evaPoint && scope === 'traverse' &&
+      <div className="eva-map-pin eva-map-pin--relief" ref={astronautElement} role="img" aria-label="Astronaut">
+        <span><PersonStanding aria-hidden="true" /></span>
+      </div>}
+    {ready && !failure && scope === 'traverse' && shelterPins.map(({ id, selected }) =>
+      <div key={id} className="shelter-pin shelter-pin--relief" role="img" aria-label={`Terrain cover candidate ${id}`}
+        ref={(element) => {
+          if (element) shelterElements.current.set(id, element);
+          else shelterElements.current.delete(id);
+        }}>
+        <span data-selected={selected}>{id}</span>
+      </div>)}
     {failure ? <div className="relief-status" role="alert">
       <span>{failure}</span><button className="button" onClick={onFallback}>Back to 2D</button>
     </div> : !ready && <div className="relief-status" role="status">Loading 3D elevation…</div>}

@@ -40,6 +40,10 @@ type PlanError = 'outside_area' | 'invalid_cell' | 'same_cell' | 'no_path';
 export type Route = { out: Leg; back: Leg };
 export type Plan = Route | { error: PlanError };
 export const MAX_SLOPE = 18;
+export type RoutePriority = 'balanced' | 'shortest' | 'gentler';
+export type RoutingSettings = { priority: RoutePriority; slopeLimit: number };
+export const DEFAULT_ROUTING: RoutingSettings = { priority: 'balanced', slopeLimit: MAX_SLOPE };
+const slopeWeights: Record<RoutePriority, number> = { balanced: 3, shortest: 0, gentler: 18 };
 const DEG = 180 / Math.PI;
 const offsets = [[0, 1], [1, 0], [0, -1], [-1, 0], [1, 1], [1, -1], [-1, 1], [-1, -1]];
 
@@ -139,14 +143,18 @@ class MinHeap {
   get size() { return this.items.length; }
 }
 
-export function planMission(terrain: Terrain, slopes: (number | null)[], start: Cell, end: Cell): Plan {
+export function planMission(
+  terrain: Terrain, slopes: (number | null)[], start: Cell, end: Cell,
+  { priority, slopeLimit }: RoutingSettings = DEFAULT_ROUTING,
+): Plan {
   const { width, height, elevationM, cellM } = terrain;
+  const slopeWeight = slopeWeights[priority];
   const toIndex = ({ row, col }: Cell) => row * width + col;
   const fromIndex = (index: number) => ({ row: Math.floor(index / width), col: index % width });
   const passable = (cell: Cell) => {
     if (!inside(terrain, cell)) return false;
     const slope = slopes[toIndex(cell)];
-    return slope != null && slope <= MAX_SLOPE && elevationM[toIndex(cell)] != null;
+    return slope != null && slope <= slopeLimit && elevationM[toIndex(cell)] != null;
   };
   if (!inside(terrain, start) || !inside(terrain, end)) return { error: 'outside_area' };
   if (!passable(start) || !passable(end)) return { error: 'invalid_cell' };
@@ -178,8 +186,8 @@ export function planMission(terrain: Terrain, slopes: (number | null)[], start: 
       const nextIndex = toIndex(next);
       const run = distance({ row, col }, next);
       const slope = stepSlope(elevation(nextIndex) - elevation(index), run);
-      if (slope > MAX_SLOPE) continue;
-      const cost = costs[index] + run * (1 + 3 * (slope / MAX_SLOPE) ** 2);
+      if (slope > slopeLimit) continue;
+      const cost = costs[index] + run * (1 + slopeWeight * (slope / MAX_SLOPE) ** 2);
       if (cost >= costs[nextIndex]) continue;
       costs[nextIndex] = cost;
       parents[nextIndex] = index;

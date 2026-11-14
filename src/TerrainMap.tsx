@@ -1,14 +1,16 @@
 import { useEffect, useRef } from 'react';
 import L from 'leaflet';
 import type { Cell, Leg, LocalPoint, Terrain } from './mission';
-import { cellAt, cellCenter, displayPosition, localPoint, MAX_SLOPE } from './mission';
+import type { ShelterPin } from './shelters';
+import { cellAt, cellCenter, displayPosition, localPoint } from './mission';
 import { cameraLocation, cameraStops, stations } from './galeRoutes';
 import galeOverview from './galeOverview.json';
 import curiosityTrack from './curiosityTrack.json';
 
 export type LayerMode = 'optical' | 'slope' | 'thermal';
 export type MapScope = 'crater' | 'region' | 'traverse';
-export const routeColor = { out: '#62e7d2', back: '#ffd081' };
+export const routeColor = { out: '#62e7d2', back: '#d6e4f2' };
+export const routeOutline = '#101821';
 const roverColor = '#cf9dff';
 
 const pointToLatLng = ({ x, y }: LocalPoint): L.LatLngTuple => [y, x];
@@ -23,7 +25,7 @@ function markerIcon(kind: 'base' | 'science') {
   });
 }
 
-export function slopeImage(terrain: Terrain, slopes: (number | null)[]) {
+export function slopeImage(terrain: Terrain, slopes: (number | null)[], slopeLimit: number) {
   const canvas = document.createElement('canvas');
   canvas.width = terrain.width;
   canvas.height = terrain.height;
@@ -31,7 +33,7 @@ export function slopeImage(terrain: Terrain, slopes: (number | null)[]) {
   const image = context.createImageData(terrain.width, terrain.height);
   slopes.forEach((slope, index) => {
     const color = slope === null ? [114, 109, 124, 210] :
-      slope > MAX_SLOPE ? [242, 73, 75, 219] :
+      slope > slopeLimit ? [242, 73, 75, 219] :
       slope > 8 ? [246, 162, 73, 210] : [48, 161, 129, 107];
     image.data.set(color, index * 4);
   });
@@ -46,8 +48,13 @@ export type MapProps = {
   target: Cell;
   activeLeg?: Leg;
   activeColor?: string;
+  activeDashed: boolean;
   activeDirection: 'out' | 'back';
+  evaPoint?: LocalPoint;
+  evaPoints?: LocalPoint[];
+  shelterPins: ShelterPin[];
   layer: LayerMode;
+  slopeLimit: number;
   scope: MapScope;
   expanded: boolean;
   opacity: number;
@@ -125,8 +132,8 @@ function assetPopup(name: string, category: string, detail: string) {
 }
 
 export function TerrainMap(props: MapProps) {
-  const { terrain, slopes, start, target, activeLeg, activeColor, activeDirection, layer, scope, expanded, opacity,
-    mode, inspection, showRover, showStations, command } = props;
+  const { terrain, slopes, start, target, activeLeg, activeColor, activeDashed, activeDirection, layer, slopeLimit, scope, expanded, opacity,
+    evaPoint, evaPoints, shelterPins, mode, inspection, showRover, showStations, command } = props;
   const callbacks = useRef(props);
   callbacks.current = props;
   const element = useRef<HTMLDivElement>(null);
@@ -136,6 +143,7 @@ export function TerrainMap(props: MapProps) {
   const inspectorDrawing = useRef<L.LayerGroup | null>(null);
   const roverDrawing = useRef<L.LayerGroup | null>(null);
   const assetDrawing = useRef<L.LayerGroup | null>(null);
+  const evaMarker = useRef<L.Marker | null>(null);
   const viewBounds = useRef<Record<MapScope, L.LatLngBounds> | null>(null);
 
   useEffect(() => {
@@ -212,6 +220,7 @@ export function TerrainMap(props: MapProps) {
       roverDrawing.current = null;
       assetDrawing.current = null;
       inspectorDrawing.current = null;
+      evaMarker.current = null;
       viewBounds.current = null;
     };
   }, [terrain]);
@@ -235,9 +244,9 @@ export function TerrainMap(props: MapProps) {
     overlay.current?.remove();
     overlay.current = null;
     if (layer === 'optical' || scope !== 'traverse') return;
-    const url = layer === 'slope' ? slopeImage(terrain, slopes) : asset('thermal.webp');
+    const url = layer === 'slope' ? slopeImage(terrain, slopes, slopeLimit) : asset('thermal.webp');
     overlay.current = L.imageOverlay(url, extent, { opacity: callbacks.current.opacity, zIndex: 2 }).addTo(map);
-  }, [layer, scope, terrain, slopes]);
+  }, [layer, scope, terrain, slopes, slopeLimit]);
 
   useEffect(() => {
     overlay.current?.setOpacity(opacity);
@@ -267,12 +276,12 @@ export function TerrainMap(props: MapProps) {
     }
     const basePoint = pointToLatLng(cellCenter(terrain, start));
     const goalPoint = pointToLatLng(cellCenter(terrain, target));
-    if (activeLeg) {
-      const points = activeLeg.path.map((cell) => pointToLatLng(cellCenter(terrain, cell)));
+    const points = evaPoints?.map(pointToLatLng) ?? activeLeg?.path.map((cell) => pointToLatLng(cellCenter(terrain, cell)));
+    if (points && points.length > 1) {
       const color = activeColor ?? routeColor[activeDirection];
-      L.polyline(points, { color: '#101a29', weight: 8, opacity: 0.95, interactive: false }).addTo(group);
-      L.polyline(points, { color, weight: 4, opacity: 1, interactive: false,
-        dashArray: activeDirection === 'back' ? '7 6' : undefined }).addTo(group);
+      L.polyline(points, { color: routeOutline, weight: 9, opacity: 0.98, interactive: false }).addTo(group);
+      L.polyline(points, { color, weight: 5, opacity: 1, interactive: false,
+        dashArray: activeDashed ? '8 6' : undefined }).addTo(group);
       const index = Math.floor(points.length * 0.57);
       const [y, x] = points[index];
       const [ey, ex] = points[Math.min(index + 1, points.length - 1)];
@@ -289,7 +298,40 @@ export function TerrainMap(props: MapProps) {
       .addTo(group).bindTooltip('Base camp', { permanent: true, direction: 'top', offset: [0, -16], className: 'base-label' });
     L.marker(goalPoint, { icon: markerIcon('science'), interactive: false, keyboard: false })
       .addTo(group).bindTooltip('Science stop', { permanent: true, direction: 'top', offset: [0, -16], className: 'target-label' });
-  }, [terrain, start, target, activeLeg, activeColor, activeDirection, scope]);
+    for (const { id, point, selected } of shelterPins) {
+      const badge = document.createElement('span');
+      badge.textContent = id;
+      badge.dataset.selected = String(selected);
+      const marker = L.marker(pointToLatLng(point), {
+        interactive: false, keyboard: false, zIndexOffset: 800,
+        icon: L.divIcon({ className: 'shelter-pin', html: badge, iconSize: [23, 23] }),
+      }).addTo(group);
+      marker.getElement()?.setAttribute('role', 'img');
+      marker.getElement()?.setAttribute('aria-label', `Terrain cover candidate ${id}`);
+    }
+  }, [terrain, start, target, activeLeg, activeColor, activeDashed, activeDirection, scope, evaPoints, shelterPins]);
+
+  useEffect(() => {
+    const map = instance.current;
+    if (!map || !evaPoint || scope === 'crater') {
+      evaMarker.current?.remove();
+      evaMarker.current = null;
+      return;
+    }
+    const position = pointToLatLng(evaPoint);
+    if (evaMarker.current) {
+      evaMarker.current.setLatLng(position);
+      return;
+    }
+    evaMarker.current = L.marker(position, {
+      interactive: false, keyboard: false, zIndexOffset: 1000,
+      icon: L.divIcon({
+        className: 'eva-map-pin', iconSize: [24, 24],
+        html: '<span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65"><rect x="5" y="3" width="14" height="17" rx="6"/><rect x="7.5" y="6" width="9" height="7" rx="2"/><path d="M9.5 16h5"/></svg></span>',
+      }),
+    }).addTo(map);
+    evaMarker.current.getElement()?.setAttribute('aria-label', 'Astronaut');
+  }, [terrain, evaPoint, scope]);
 
   useEffect(() => {
     const group = roverDrawing.current;

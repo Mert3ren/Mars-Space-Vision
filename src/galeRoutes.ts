@@ -1,4 +1,4 @@
-import { cellAt, DEFAULT_ROUTING, estimateReserve, localPoint, planMission, RESERVE_EPSILON, walkMinutes } from './mission.ts';
+import { cellAt, DEFAULT_ROUTING, estimateTimedReserve, localPoint, planMission, RESERVE_EPSILON } from './mission.ts';
 import type { Cell, Leg, LocalPoint, ReserveSettings, Route, RoutePriority, RoutingSettings, Terrain } from './mission.ts';
 
 export const stations = [
@@ -30,19 +30,20 @@ export type RouteOption = Route & {
 };
 
 export function arrivalMinutes(route: Route, destination: 'out' | 'back', stopTime = 0) {
-  if (destination === 'out') return walkMinutes(route.out.distanceM);
-  return walkMinutes(route.out.distanceM + route.back.distanceM) + stopTime;
+  if (destination === 'out') return route.out.minutes;
+  return route.out.minutes + route.back.minutes + stopTime;
 }
 
 function joinLegs(first: Leg, second: Leg): Leg {
   return {
     path: [...first.path, ...second.path.slice(1)],
     distanceM: first.distanceM + second.distanceM,
+    minutes: first.minutes + second.minutes,
     climbM: first.climbM + second.climbM,
     descentM: first.descentM + second.descentM,
     maxSlope: Math.max(first.maxSlope, second.maxSlope),
     profile: [...first.profile, ...second.profile.slice(1).map((point) => ({
-      ...point, distanceM: point.distanceM + first.distanceM,
+      ...point, distanceM: point.distanceM + first.distanceM, minutes: point.minutes + first.minutes,
     }))],
   };
 }
@@ -55,7 +56,7 @@ export function missionRoutes(
   const options: RouteOption[] = [{ ...direct, id: 'direct', code: 'A', name: 'Direct route', color: '#62e7d2' }];
   const profiles = [{ code: 'B', color: '#78b9ff' }, { code: 'C', color: '#c6c7f5' }] as const;
 
-  stations.forEach((station, index) => {
+  if (terrain.region !== 'boxwork') stations.forEach((station, index) => {
     const via = cellAt(terrain, station.point);
     const first = planMission(terrain, slopes, start, via, settings);
     const second = planMission(terrain, slopes, via, target, settings);
@@ -83,17 +84,16 @@ export function compareRoutes(
 ) {
   const options = routes.map((route) => {
     const distanceM = route.out.distanceM + route.back.distanceM;
-    const reserve = estimateReserve(distanceM, stopMinutes, delay, settings);
+    const reserve = estimateTimedReserve(route.out.minutes + route.back.minutes, stopMinutes, delay, settings);
     return { route, distanceM, reserve, maxSlope: Math.max(route.out.maxSlope, route.back.maxSlope) };
   });
   const eligible = options.filter(({ reserve }) => reserve.margin >= -RESERVE_EPSILON);
-  // Mission time and reserve are both monotonic in distance at the modeled constant pace.
   const recommended = eligible.reduce<(typeof options)[number] | undefined>((best, option) => {
     if (!best) return option;
     if (priority === 'gentler' && Math.abs(option.maxSlope - best.maxSlope) > RESERVE_EPSILON) {
       return option.maxSlope < best.maxSlope ? option : best;
     }
-    return option.distanceM < best.distanceM ? option : best;
+    return option.reserve.missionMinutes < best.reserve.missionMinutes ? option : best;
   }, undefined);
   return { options, recommended };
 }

@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
-import { routeColor, routeOutline, slopeImage } from './TerrainMap';
+import { gridOverlayImage, routeColor, routeOutline, slopeImage } from './TerrainMap';
 import type { MapProps } from './TerrainMap';
 import { cellAt, cellCenter, displayPosition, localPoint } from './mission';
 import type { LocalPoint, Terrain } from './mission';
@@ -16,6 +16,7 @@ import { arrivalMinutes, cameraLocation, cameraStops, stations } from './galeRou
 import type { RouteId, RouteOption } from './galeRoutes';
 import { symbolGlyph } from './mapSymbols';
 import type { SymbolKind } from './mapSymbols';
+import { regionAsset } from './regionAssets';
 
 const asset = (path: string) => `${import.meta.env.BASE_URL}gale/${path}`;
 const panorama = { crater: galeOverview.image, region: galeOverview.region.image, traverse: 'optical.webp' };
@@ -71,18 +72,57 @@ function disposeDrawings(group: THREE.Group) {
   }
 }
 
-export function HelmetView({ terrain, point, heading, onFallback }: {
-  terrain: Terrain; point: LocalPoint; heading: LocalPoint; onFallback: () => void;
+type HelmetGrid = ElevationGrid & { cellM: number };
+const helmetGrids = new Map<string, Promise<HelmetGrid>>();
+
+function loadHelmetGrid(region: NonNullable<Terrain['region']>) {
+  let load = helmetGrids.get(region);
+  if (!load) {
+    const checked = async (name: string) => {
+      const response = await fetch(regionAsset(region, name));
+      if (!response.ok) throw new Error('Helmet data missing');
+      return response;
+    };
+    load = Promise.all([
+      checked('helmet-grid.json').then((response) => response.json() as Promise<{width: number; height: number; cellM: number; reference: number}>),
+      checked('helmet-elevation.bin').then((response) => response.arrayBuffer()),
+    ]).then(([meta, buffer]) => {
+      if (meta.width * meta.height * 2 !== buffer.byteLength) throw new Error('Invalid helmet elevation grid');
+      const view = new DataView(buffer);
+      const elevationM = Array.from({ length: meta.width * meta.height }, (_, i) => {
+        const value = view.getInt16(i * 2, true);
+        return value === -32768 ? null : meta.reference + value / 100;
+      });
+      return { ...meta, elevationM };
+    }).catch((error) => { helmetGrids.delete(region); throw error; });
+    helmetGrids.set(region, load);
+  }
+  return load;
+}
+
+export function HelmetView({ terrain, point, heading, relief, sun, shadowed, onFallback }: {
+  terrain: Terrain; point: LocalPoint; heading: LocalPoint; relief: boolean;
+  sun: { east: number; north: number; up: number }; shadowed: boolean; onFallback: () => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
-  const live = useRef({ point, heading });
-  live.current = { point, heading };
-  const frame = useMemo(() => terrainFrame(terrain, 'traverse', terrain, 1), [terrain]);
+  const live = useRef({ point, heading, sun, relief, shadowed });
+  live.current = { point, heading, sun, relief, shadowed };
+  const [detail, setDetail] = useState<HelmetGrid>();
+  const region = terrain.region ?? 'gale';
+  useEffect(() => {
+    let current = true;
+    loadHelmetGrid(region).then((grid) => { if (current) setDetail(grid); }).catch(() => {});
+    return () => { current = false; };
+  }, [region]);
+  const grid = detail ?? terrain;
+  const frame = useMemo(() => terrainFrame(terrain, 'traverse', grid, 1), [terrain, grid]);
   const [failure, setFailure] = useState('');
   const [ready, setReady] = useState(false);
   useEffect(() => {
     const element = container.current;
     if (!element) return;
+    setFailure('');
+    setReady(false);
     let renderer: THREE.WebGLRenderer;
     try {
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -90,7 +130,7 @@ export function HelmetView({ terrain, point, heading, onFallback }: {
       setFailure('Helmet camera requires WebGL 2.');
       return;
     }
-    renderer.setPixelRatio(Math.min(1.5, window.devicePixelRatio));
+    renderer.setPixelRatio(Math.max(1.5, Math.min(2.5, window.devicePixelRatio)));
     renderer.domElement.setAttribute('role', 'img');
     renderer.domElement.setAttribute('aria-label', 'Simulated first-person view of Gale terrain');
     element.appendChild(renderer.domElement);
@@ -98,18 +138,33 @@ export function HelmetView({ terrain, point, heading, onFallback }: {
     scene.fog = new THREE.Fog('#bb856a', 8, 29);
     const camera = new THREE.PerspectiveCamera(68, 1, 0.025, 80);
     camera.rotation.order = 'YXZ';
-    camera.rotation.x = -0.16;
-    const mesh = new THREE.Mesh(buildMesh(terrain, frame), new THREE.MeshBasicMaterial({ color: '#b78569' }));
+    camera.rotation.x = -0.14;
+    scene.add(new THREE.HemisphereLight('#f5ebde', '#90664e', 1.1));
+    const sunlight = new THREE.DirectionalLight('#ffe9cb', 1.7);
+    scene.add(sunlight);
+    const reliefMaterial = new THREE.MeshLambertMaterial({ color: '#ba9376' });
+    const opticalMaterial = new THREE.MeshLambertMaterial({ color: '#b78569' });
+    const mesh = new THREE.Mesh(buildMesh(grid, frame), opticalMaterial);
     scene.add(mesh);
     let disposed = false;
-    const texture = new THREE.TextureLoader().load(asset('optical.webp'), (loaded) => {
+    const loader = new THREE.TextureLoader();
+    let texture = loader.load(regionAsset(region, detail ? 'helmet-optical.webp' : 'optical.webp'), loaded, undefined, () => {
+      if (disposed) return;
+      if (!detail) { setFailure('Helmet camera imagery could not be loaded.'); return; }
+      texture.dispose();
+      texture = loader.load(regionAsset(region, 'optical.webp'), loaded, undefined, () => {
+        if (!disposed) setFailure('Helmet camera imagery could not be loaded.');
+      });
+    });
+    function loaded(loaded: THREE.Texture) {
       if (disposed) return;
       loaded.colorSpace = THREE.SRGBColorSpace;
-      mesh.material.map = loaded;
-      mesh.material.color.set('#ffffff');
-      mesh.material.needsUpdate = true;
+      loaded.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+      opticalMaterial.map = loaded;
+      opticalMaterial.color.set('#ffffff');
+      opticalMaterial.needsUpdate = true;
       setReady(true);
-    }, undefined, () => { if (!disposed) setFailure('Helmet camera imagery could not be loaded.'); });
+    }
 
     const observer = new ResizeObserver(() => {
       if (!element.clientWidth || !element.clientHeight) return;
@@ -125,8 +180,17 @@ export function HelmetView({ terrain, point, heading, onFallback }: {
     renderer.domElement.addEventListener('webglcontextlost', lost);
     let frameTime: number | undefined;
     renderer.setAnimationLoop((time) => {
-      const pose = element.clientWidth && element.clientHeight ? helmetPose(terrain, frame, live.current.point, live.current.heading) : null;
+      const { point, heading, sun, relief } = live.current;
+      const pose = element.clientWidth && element.clientHeight ? helmetPose(grid, frame, point, heading) ?? helmetPose(terrain, frame, point, heading) : null;
       if (pose) {
+        mesh.material = relief ? reliefMaterial : opticalMaterial;
+        if (relief) {
+          sunlight.position.set(-1, 0.67, 0.45);
+          sunlight.intensity = 2.2;
+        } else {
+          sunlight.position.set(sun.east, sun.up, -sun.north);
+          sunlight.intensity = sun.up > 0 ? live.current.shadowed ? 0.35 : 1.65 : 0;
+        }
         camera.position.set(...pose.position);
         if (pose.yaw !== null) {
           const delta = pose.yaw - camera.rotation.y;
@@ -143,17 +207,19 @@ export function HelmetView({ terrain, point, heading, onFallback }: {
       observer.disconnect();
       renderer.domElement.removeEventListener('webglcontextlost', lost);
       texture.dispose();
-      mesh.material.dispose();
+      opticalMaterial.dispose();
+      reliefMaterial.dispose();
       mesh.geometry.dispose();
       renderer.dispose();
       renderer.forceContextLoss();
       renderer.domElement.remove();
     };
-  }, [terrain, frame]);
+  }, [terrain, frame, grid, region, detail]);
   return <>
     <div className="helmet-scene" ref={container} />
-    {failure && <div className="relief-status" role="alert"><span>{failure}</span><button className="button" onClick={onFallback}>Watch on 2D map</button></div>}
+    {failure && <div className="relief-status" role="alert"><span>{failure}</span><button className="button" onClick={onFallback}>Hide camera</button></div>}
     {!failure && !ready && <div className="relief-status" role="status">Loading helmet camera…</div>}
+    {!failure && ready && <span className="helmet-resolution">{grid.cellM} m elevation grid</span>}
   </>;
 }
 
@@ -189,7 +255,7 @@ function fetchOverview() {
 
 export default function ReliefMap(props: Props) {
   const { terrain, scope, expanded, layer, opacity, slopes, slopeLimit, start, target, activeLeg, activeDirection, showRover,
-    activeColor, activeDashed, evaPoint, evaPoints, shelterPins, missionPins, missionReturnPoints, heading, showStations,
+    activeColor, activeDashed, evaPoint, evaPoints, shelterPins, missionPins, missionReturnPoints, reserveOverlay, shadowOverlay, heading, showStations,
     inspection, command, mode, onFallback, routes, selectedRoute, stopTime, onSelectRoute } = props;
   const callbacks = useRef(props);
   callbacks.current = props;
@@ -241,7 +307,7 @@ export default function ReliefMap(props: Props) {
       id: `shelter-${id}`, kind: 'shelter', point, name: `Terrain cover candidate ${id}`, number: id, state: selected ? 'active' : 'pending',
     }));
     if (showStations && !mode) {
-      stations.forEach(({ id, point, name }) => entries.push({ id, kind: 'station', point, name }));
+      if (terrain.region !== 'boxwork') stations.forEach(({ id, point, name }) => entries.push({ id, kind: 'station', point, name }));
       cameraStops.forEach((stop, index) => entries.push({
         id: `camera-${index}`, kind: 'camera', point: cameraLocation(terrain, stop), name: stop.name, link: stop.source,
       }));
@@ -422,7 +488,7 @@ export default function ReliefMap(props: Props) {
     let disposed = false;
     let texture: THREE.CanvasTexture | undefined;
     const loader = new THREE.ImageLoader();
-    const base = loader.loadAsync(asset(panorama[scope]));
+    const base = loader.loadAsync(scope === 'traverse' ? regionAsset(terrain.region ?? 'gale', 'optical.webp') : asset(panorama[scope]));
     const overlay = scope === 'traverse' && layer !== 'optical'
       ? loader.loadAsync(layer === 'thermal' ? asset('thermal.webp') : slopeImage(terrain, slopes, slopeLimit))
       : Promise.resolve(null);
@@ -438,6 +504,9 @@ export default function ReliefMap(props: Props) {
         context.globalAlpha = opacity;
         context.drawImage(extra, 0, 0, canvas.width, canvas.height);
       }
+      context.globalAlpha = 1;
+      if (scope === 'traverse' && shadowOverlay) context.drawImage(gridOverlayImage(shadowOverlay, 'shadow'), 0, 0, canvas.width, canvas.height);
+      if (scope === 'traverse' && reserveOverlay) context.drawImage(gridOverlayImage(reserveOverlay, 'reserve'), 0, 0, canvas.width, canvas.height);
       texture = new THREE.CanvasTexture(canvas);
       texture.colorSpace = THREE.SRGBColorSpace;
       scene.mesh.material.map = texture;
@@ -451,7 +520,7 @@ export default function ReliefMap(props: Props) {
         texture.dispose();
       }
     };
-  }, [frame, scope, layer, terrain, slopes, slopeLimit, opacity]);
+  }, [frame, scope, layer, terrain, slopes, slopeLimit, opacity, reserveOverlay, shadowOverlay]);
 
   useEffect(() => {
     const scene = handle.current;

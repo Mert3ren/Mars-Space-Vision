@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { ArrowRight, BatteryCharging, ChevronDown, Clock3, Droplets, RotateCcw, Shield, TriangleAlert } from 'lucide-react';
 import {
-  estimateReserve, MAX_SCENARIO_MINUTES, RESERVE_EPSILON, RESOURCE_RATES, WALK_KPH, walkMinutes,
+  estimateTimedReserve, MAX_SCENARIO_MINUTES, RESERVE_EPSILON, RESOURCE_RATES, WALK_KPH,
 } from './mission';
 import type { ReserveSettings } from './mission';
 import type { RouteOption } from './galeRoutes';
 
-type ReserveResult = ReturnType<typeof estimateReserve>;
+type ReserveResult = ReturnType<typeof estimateTimedReserve>;
 type Props = {
   route?: RouteOption;
   estimate: ReserveResult | null;
@@ -46,8 +46,8 @@ function percent(value: number) {
 function ReserveTimeline({ route, estimate, stopMinutes, delay }: {
   route: RouteOption; estimate: ReserveResult; stopMinutes: number; delay: number;
 }) {
-  const outbound = walkMinutes(route.out.distanceM);
-  const inbound = walkMinutes(route.back.distanceM);
+  const outbound = route.out.minutes;
+  const inbound = route.back.minutes;
   const stages = [
     { id: 'outbound', name: 'Outbound', minutes: outbound },
     { id: 'fieldwork', name: 'Stop', minutes: stopMinutes },
@@ -166,7 +166,7 @@ export function ReturnReserve({
           onChange={(battery) => onSettingsChange({ ...settings, battery })} />
         <NumberField label="Minimum at return" value={settings.minimum} max={100} unit="%"
           onChange={(minimum) => onSettingsChange({ ...settings, minimum })} />
-        <p>Example pace {WALK_KPH} km/h. Oxygen drops {RESOURCE_RATES.oxygen} and battery {RESOURCE_RATES.battery} percentage points per hour, including stops and delays.</p>
+        <p>Flat pace {WALK_KPH} km/h. Uphill, downhill and cross-slope change travel time. Oxygen drops {RESOURCE_RATES.oxygen} and battery {RESOURCE_RATES.battery} percentage points per hour, including stops and delays.</p>
       </div>}
     </section>
   );

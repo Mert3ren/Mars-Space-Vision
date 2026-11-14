@@ -19,13 +19,15 @@ function arrivalTime(minutes: number) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
-export function SpePanel({ cellM, target, options, selected, base, urgent, onTarget, onSelect, onDivert, onReturn, onClose }: {
+export function SpePanel({ cellM, target, options, selected, base, urgent, loading, failed, onTarget, onSelect, onDivert, onReturn, onClose }: {
   cellM: number;
   target: SpeTarget;
   options: ShelterOption[];
   selected: number;
   base: { distanceM: number; arrival: Projection } | null;
   urgent: boolean;
+  loading: boolean;
+  failed: boolean;
   onTarget: (target: SpeTarget) => void;
   onSelect: (index: number) => void;
   onDivert: () => void;
@@ -49,7 +51,9 @@ export function SpePanel({ cellM, target, options, selected, base, urgent, onTar
             onClick={() => onTarget(minutes)}>{minutes} min</button>)}
         </div>
       </div>
-      {!withinTarget && <p className="spe-empty" role="status">No reachable candidate meets the {target}-minute drill target.</p>}
+      {loading && <p className="spe-empty" role="status">Analyzing terrain and walking times…</p>}
+      {failed && <p className="spe-empty" role="status">Candidate analysis is unavailable. The base route remains selectable if reachable.</p>}
+      {!loading && !failed && !withinTarget && <p className="spe-empty" role="status">No reachable candidate meets the {target}-minute drill target.</p>}
       {options.length > 0 && <div className="spe-options" role="group" aria-label="Natural cover candidates">
         {options.map((option, index) => <button className="spe-option" key={`${option.candidate.cell.row}:${option.candidate.cell.col}`}
           aria-pressed={selected === index} onClick={() => onSelect(index)}>

@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowUp, Flag, Play, Plus, Target, Trash2, TriangleAlert } from 'lucide-react';
 import { emptyStop, MAX_MISSION_STOPS } from './missionDraft';
 import type { DraftStop, MissionDraft, MissionPreview } from './missionDraft';
-import { cellCenter, displayPosition, MAX_SCENARIO_MINUTES, MAX_SLOPE, RESERVE_EPSILON, walkMinutes } from './mission';
+import { cellCenter, displayPosition, MAX_SCENARIO_MINUTES, MAX_SLOPE, RESERVE_EPSILON } from './mission';
 import type { Cell, RoutePriority, RoutingSettings, Terrain } from './mission';
 
 export type MissionPick = 'base' | number;
@@ -18,19 +18,23 @@ function formatMinutes(minutes: number) {
   return `${minutes.toFixed(1)} min`;
 }
 
-export function MissionBuilder({ draft, terrain, base, preview, routing, pick, onDraft, onRouting, onPick, onSimulate }: {
+export function MissionBuilder({ draft, terrain, base, preview, routing, pick, loading, failed, returnReady, onDraft, onRouting, onPick, onSimulate }: {
   draft: MissionDraft;
   terrain: Terrain;
   base: Cell;
   preview: MissionPreview;
   routing: RoutingSettings;
   pick: MissionPick | null;
+  loading: boolean;
+  failed: boolean;
+  returnReady: boolean;
   onDraft: (draft: MissionDraft) => void;
   onRouting: (routing: RoutingSettings) => void;
   onPick: (pick: MissionPick) => void;
   onSimulate: () => void;
 }) {
-  const valid = Boolean(draft.name.trim() && draft.stops.every((stop) => stop.task.trim()) && preview.reserve);
+  const valid = Boolean(draft.name.trim() && draft.stops.every((stop) => stop.task.trim()) && preview.reserve &&
+    !loading && !failed && returnReady);
   const update = (index: number, stop: DraftStop) => onDraft({ ...draft,
     stops: draft.stops.map((current, i) => i === index ? stop : current) });
   function move(index: number, offset: number) {
@@ -77,17 +81,19 @@ export function MissionBuilder({ draft, terrain, base, preview, routing, pick, o
           <label className="mission-field">Work (min)<input type="number" min={0} max={MAX_SCENARIO_MINUTES} step={1} value={stop.minutes}
             onChange={(event) => update(index, { ...stop, minutes: Math.max(0, Math.min(MAX_SCENARIO_MINUTES, Math.trunc(Number(event.target.value) || 0))) })} /></label>
         </div>
-        {preview.stops[index] && <small>Walk {formatMinutes(walkMinutes(preview.stops[index].leg.distanceM))}</small>}
-        {preview.error?.index === index && stop.cell && <p className="mission-editor-error" role="status">{errors[preview.error.reason]}</p>}
+        {preview.stops[index] && <small>Walk {formatMinutes(preview.stops[index].leg.minutes)}</small>}
+        {!loading && !failed && preview.error?.index === index && stop.cell && <p className="mission-editor-error" role="status">{errors[preview.error.reason]}</p>}
       </fieldset>)}
       <button className="button" disabled={draft.stops.length >= MAX_MISSION_STOPS}
         onClick={() => onDraft({ ...draft, stops: [...draft.stops, emptyStop()] })}><Plus size={15} /> Add stop</button>
       {preview.error?.index === draft.stops.length && <p className="mission-editor-error" role="status">
         Return to base · {errors[preview.error.reason]}
       </p>}
+      {loading && <p className="muted" role="status">Calculating traverse…</p>}
+      {failed && <p className="mission-editor-error" role="alert">Traverse analysis is unavailable.</p>}
       {reserve && preview.inbound && <div className="mission-estimate">
         <dl>
-          <div><dt>Return leg</dt><dd>{formatMinutes(walkMinutes(preview.inbound.distanceM))}</dd></div>
+          <div><dt>Return leg</dt><dd>{formatMinutes(preview.inbound.minutes)}</dd></div>
           <div><dt>Walking</dt><dd>{formatMinutes(reserve.travelMinutes)}</dd></div>
           <div><dt>Work</dt><dd>{formatMinutes(preview.work)}</dd></div>
           {preview.delay > 0 && <div><dt>First stop delay</dt><dd>{formatMinutes(preview.delay)}</dd></div>}

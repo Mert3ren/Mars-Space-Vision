@@ -16,6 +16,7 @@ export type Source = {
 };
 
 export type Terrain = {
+  region?: 'gale' | 'boxwork';
   bounds: { west: number; south: number; east: number; north: number };
   radiusM: number;
   width: number;
@@ -30,10 +31,11 @@ export type Terrain = {
 export type Leg = {
   path: Cell[];
   distanceM: number;
+  minutes: number;
   climbM: number;
   descentM: number;
   maxSlope: number;
-  profile: { distanceM: number; elevationM: number }[];
+  profile: { distanceM: number; elevationM: number; minutes: number }[];
 };
 
 type PlanError = 'outside_area' | 'invalid_cell' | 'same_cell' | 'no_path';
@@ -86,7 +88,7 @@ export function inspectTerrain(terrain: Terrain, slopes: (number | null)[], poin
   return { elevationM: terrain.elevationM[index], slope: slopes[index] };
 }
 
-function eastScale(terrain: Terrain) {
+export function eastScale(terrain: Terrain) {
   return Math.cos((terrain.bounds.south + terrain.bounds.north) / 2 / terrain.radiusM);
 }
 
@@ -104,6 +106,36 @@ export function slopeGrid(terrain: Terrain): (number | null)[] {
     if (west === null || east === null || north === null || south === null) return null;
     return Math.atan(Math.hypot((east - west) / (2 * eastCell), (north - south) / (2 * cellM))) * DEG;
   });
+}
+
+export function terrainGradient(terrain: Terrain, { row, col }: Cell) {
+  if (row < 1 || col < 1 || row >= terrain.height - 1 || col >= terrain.width - 1) return null;
+  const { elevationM, width, cellM } = terrain;
+  const i = row * width + col;
+  const west = elevationM[i - 1];
+  const east = elevationM[i + 1];
+  const north = elevationM[i - width];
+  const south = elevationM[i + width];
+  if (west == null || east == null || north == null || south == null) return null;
+  return { east: (east - west) / (2 * cellM * eastScale(terrain)), north: (north - south) / (2 * cellM) };
+}
+
+export function edgeSlope(terrain: Terrain, from: Cell, to: Cell) {
+  const { elevationM, width, cellM } = terrain;
+  const east = (to.col - from.col) * cellM * eastScale(terrain);
+  const north = (from.row - to.row) * cellM;
+  const distance = Math.hypot(east, north);
+  const a = elevationM[from.row * width + from.col];
+  const b = elevationM[to.row * width + to.col];
+  const ga = terrainGradient(terrain, from);
+  const gb = terrainGradient(terrain, to);
+  if (!distance || a == null || b == null || !ga || !gb) return null;
+  const longitudinal = Math.atan2(b - a, distance) * DEG;
+  const crossGrade = Math.max(Math.abs(ga.east * north - ga.north * east), Math.abs(gb.east * north - gb.north * east)) / distance;
+  const cross = Math.atan(crossGrade) * DEG;
+  const minutes = walkMinutes(distance) * (1 + 0.6 * Math.max(0, longitudinal) / 18 +
+    0.3 * Math.max(0, -longitudinal) / 12 + 0.2 * cross / 10);
+  return { distance, longitudinal, cross, minutes };
 }
 
 class MinHeap {
@@ -143,10 +175,15 @@ class MinHeap {
   get size() { return this.items.length; }
 }
 
-export function planMission(
-  terrain: Terrain, slopes: (number | null)[], start: Cell, end: Cell,
-  { priority, slopeLimit }: RoutingSettings = DEFAULT_ROUTING,
-): Plan {
+type SearchOptions = {
+  target?: Cell;
+  reverse?: boolean;
+  maxMinutes?: number;
+};
+
+export function traverseSearch(terrain: Terrain, slopes: (number | null)[],
+  origins: { cell: Cell; minutes: number }[], { priority, slopeLimit }: RoutingSettings,
+  { target, reverse = false, maxMinutes = Infinity }: SearchOptions = {}) {
   const { width, height, elevationM, cellM } = terrain;
   const slopeWeight = slopeWeights[priority];
   const toIndex = ({ row, col }: Cell) => row * width + col;
@@ -156,72 +193,110 @@ export function planMission(
     const slope = slopes[toIndex(cell)];
     return slope != null && slope <= slopeLimit && elevationM[toIndex(cell)] != null;
   };
-  if (!inside(terrain, start) || !inside(terrain, end)) return { error: 'outside_area' };
-  if (!passable(start) || !passable(end)) return { error: 'invalid_cell' };
-  const first = toIndex(start);
-  const target = toIndex(end);
-  if (first === target) return { error: 'same_cell' };
-
   const eastCell = cellM * eastScale(terrain);
   const distance = (a: Cell, b: Cell) => Math.hypot((b.row - a.row) * cellM, (b.col - a.col) * eastCell);
-  const elevation = (index: number) => elevationM[index] as number;
-  const stepSlope = (rise: number, run: number) => Math.atan(Math.abs(rise) / run) * DEG;
+  const targetIndex = target ? toIndex(target) : -1;
+  const heuristic = (cell: Cell) => target ? walkMinutes(distance(cell, target)) : 0;
   const costs = new Float64Array(width * height).fill(Infinity);
   const parents = new Int32Array(width * height).fill(-1);
   const visited = new Uint8Array(width * height);
   const candidates = new MinHeap();
-  costs[first] = 0;
-  candidates.push({ index: first, priority: distance(start, end) });
+  for (const { cell, minutes } of origins) {
+    if (!passable(cell) || minutes > maxMinutes) continue;
+    const index = toIndex(cell);
+    if (minutes >= costs[index]) continue;
+    costs[index] = minutes;
+    candidates.push({ index, priority: minutes + heuristic(cell) });
+  }
 
   while (candidates.size) {
     const { index } = candidates.pop();
     if (visited[index]) continue;
     visited[index] = 1;
-    if (index === target) break;
+    if (index === targetIndex) break;
     const { row, col } = fromIndex(index);
     for (const [dr, dc] of offsets) {
       const next = { row: row + dr, col: col + dc };
       if (!passable(next)) continue;
       if (dr && dc && (!passable({ row: row + dr, col }) || !passable({ row, col: col + dc }))) continue;
       const nextIndex = toIndex(next);
-      const run = distance({ row, col }, next);
-      const slope = stepSlope(elevation(nextIndex) - elevation(index), run);
-      if (slope > slopeLimit) continue;
-      const cost = costs[index] + run * (1 + slopeWeight * (slope / MAX_SLOPE) ** 2);
-      if (cost >= costs[nextIndex]) continue;
+      const cell = { row, col };
+      const grade = reverse ? edgeSlope(terrain, next, cell) : edgeSlope(terrain, cell, next);
+      if (!grade || !gradeAllowed(grade, slopeLimit)) continue;
+      const slope = Math.max(Math.abs(grade.longitudinal), grade.cross);
+      const cost = costs[index] + grade.minutes * (1 + slopeWeight * (slope / MAX_SLOPE) ** 2);
+      if (cost > maxMinutes || cost >= costs[nextIndex]) continue;
       costs[nextIndex] = cost;
       parents[nextIndex] = index;
-      candidates.push({ index: nextIndex, priority: cost + distance(next, end) });
+      candidates.push({ index: nextIndex, priority: cost + heuristic(next) });
     }
   }
 
-  if (parents[target] === -1) return { error: 'no_path' };
-  const indexes: number[] = [];
-  for (let position = target; position !== -1; position = parents[position]) indexes.push(position);
-  indexes.reverse();
+  return { costs, parents, toIndex, fromIndex };
+}
 
-  function summarize(legIndexes: number[]): Leg {
-    let distanceM = 0;
-    let climbM = 0;
-    let descentM = 0;
-    let maxSlope = 0;
-    const path = legIndexes.map(fromIndex);
-    const profile = legIndexes.map((index, i) => {
-      if (i > 0) {
-        const run = distance(path[i - 1], path[i]);
-        const rise = elevation(index) - elevation(legIndexes[i - 1]);
-        distanceM += run;
-        climbM += Math.max(0, rise);
-        descentM += Math.max(0, -rise);
-        maxSlope = Math.max(maxSlope, stepSlope(rise, run));
-      }
-      return { distanceM, elevationM: elevation(index) };
-    });
-    return { path, profile, distanceM, climbM, descentM, maxSlope };
-  }
+export type PathTree = Pick<ReturnType<typeof traverseSearch>, 'costs' | 'parents'>;
 
-  // The policy and its edge costs are symmetric, so reversing produces an optimal return leg.
-  return { out: summarize(indexes), back: summarize([...indexes].reverse()) };
+export function restoreSearch(terrain: Terrain, tree: PathTree) {
+  return { ...tree, toIndex: ({ row, col }: Cell) => row * terrain.width + col,
+    fromIndex: (index: number) => ({ row: Math.floor(index / terrain.width), col: index % terrain.width }) };
+}
+
+export function gradeAllowed(grade: NonNullable<ReturnType<typeof edgeSlope>>, slopeLimit: number) {
+  return grade.longitudinal <= Math.min(18, slopeLimit) &&
+    grade.longitudinal >= -Math.min(12, slopeLimit) && grade.cross <= Math.min(10, slopeLimit);
+}
+
+export function searchPath(search: ReturnType<typeof traverseSearch>, destination: Cell) {
+  const index = search.toIndex(destination);
+  if (!Number.isFinite(search.costs[index])) return null;
+  const path = [];
+  for (let cursor = index; cursor !== -1; cursor = search.parents[cursor]) path.push(search.fromIndex(cursor));
+  return path.reverse();
+}
+
+export function summarizeLeg(terrain: Terrain, path: Cell[]): Leg {
+  let distanceM = 0;
+  let minutes = 0;
+  let climbM = 0;
+  let descentM = 0;
+  let maxSlope = 0;
+  const elevation = (cell: Cell) => terrain.elevationM[cell.row * terrain.width + cell.col] as number;
+  const profile = path.map((cell, i) => {
+    if (i > 0) {
+      const edge = edgeSlope(terrain, path[i - 1], cell)!;
+      const rise = elevation(cell) - elevation(path[i - 1]);
+      distanceM += edge.distance;
+      minutes += edge.minutes;
+      climbM += Math.max(0, rise);
+      descentM += Math.max(0, -rise);
+      maxSlope = Math.max(maxSlope, Math.abs(edge.longitudinal));
+    }
+    return { distanceM, elevationM: elevation(cell), minutes };
+  });
+  return { path, profile, distanceM, minutes, climbM, descentM, maxSlope };
+}
+
+export function planLeg(terrain: Terrain, slopes: (number | null)[], start: Cell, end: Cell,
+  routing: RoutingSettings = DEFAULT_ROUTING): Leg | { error: PlanError } {
+  if (!inside(terrain, start) || !inside(terrain, end)) return { error: 'outside_area' };
+  if ([start, end].some((cell) => {
+    const index = cell.row * terrain.width + cell.col;
+    const slope = slopes[index];
+    return terrain.elevationM[index] == null || slope == null || slope > routing.slopeLimit;
+  })) return { error: 'invalid_cell' };
+  if (start.row === end.row && start.col === end.col) return { error: 'same_cell' };
+  const search = traverseSearch(terrain, slopes, [{ cell: start, minutes: 0 }], routing, { target: end });
+  const path = searchPath(search, end);
+  return path ? summarizeLeg(terrain, path) : { error: 'no_path' };
+}
+
+export function planMission(terrain: Terrain, slopes: (number | null)[], start: Cell, end: Cell,
+  routing: RoutingSettings = DEFAULT_ROUTING): Plan {
+  const out = planLeg(terrain, slopes, start, end, routing);
+  if ('error' in out) return out;
+  const back = planLeg(terrain, slopes, end, start, routing);
+  return 'error' in back ? back : { out, back };
 }
 
 export const RESERVE = 20;
@@ -244,7 +319,11 @@ export function estimateReserve(
   delayMinutes: number,
   settings: ReserveSettings = DEFAULT_RESERVE_SETTINGS,
 ) {
-  const travelMinutes = walkMinutes(distanceM);
+  return estimateTimedReserve(walkMinutes(distanceM), stopMinutes, delayMinutes, settings);
+}
+
+export function estimateTimedReserve(travelMinutes: number, stopMinutes: number, delayMinutes: number,
+  settings: ReserveSettings = DEFAULT_RESERVE_SETTINGS) {
   const missionMinutes = travelMinutes + stopMinutes + delayMinutes;
   const resources = [
     { name: 'Oxygen', start: settings.oxygen, rate: RESOURCE_RATES.oxygen },

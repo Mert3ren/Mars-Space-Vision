@@ -1,4 +1,4 @@
-import { estimateReserve, MAX_SCENARIO_MINUTES, MAX_SLOPE, planMission } from './mission.ts';
+import { estimateTimedReserve, MAX_SCENARIO_MINUTES, MAX_SLOPE, planLeg } from './mission.ts';
 import type { Cell, Leg, ReserveSettings, RoutingSettings, Terrain } from './mission.ts';
 
 export type DraftStop = { cell: Cell | null; task: string; minutes: number };
@@ -13,9 +13,9 @@ function validCell(value: unknown): value is Cell {
     Number.isInteger(value.row) && Number.isInteger(value.col));
 }
 
-export function readMissionDraft(): MissionDraft {
+export function readMissionDraft(region: 'gale' | 'boxwork' = 'gale'): MissionDraft {
   try {
-    const saved: Partial<MissionDraft> = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null');
+    const saved: Partial<MissionDraft> = JSON.parse(localStorage.getItem(region === 'gale' ? STORAGE_KEY : `${STORAGE_KEY}.${region}`) ?? 'null');
     if (typeof saved?.name === 'string' && Array.isArray(saved.stops) && saved.stops.length) {
       const routing = saved.routing;
       const validRouting = routing && ['balanced', 'shortest', 'gentler'].includes(routing.priority) &&
@@ -36,9 +36,9 @@ export function readMissionDraft(): MissionDraft {
   return { name: '', base: null, stops: [emptyStop()] };
 }
 
-export function saveMissionDraft(draft: MissionDraft) {
+export function saveMissionDraft(draft: MissionDraft, region: 'gale' | 'boxwork' = 'gale') {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(draft));
+    localStorage.setItem(region === 'gale' ? STORAGE_KEY : `${STORAGE_KEY}.${region}`, JSON.stringify(draft));
   } catch {
     // Keep the in-memory draft available.
   }
@@ -50,17 +50,18 @@ export function buildMission(terrain: Terrain, slopes: (number | null)[], base: 
   let from = base;
   for (const [index, stop] of draft.stops.entries()) {
     if (!stop.cell) return { stops, error: { index, reason: 'pick' as const } };
-    const result = planMission(terrain, slopes, from, stop.cell, routing);
+    const result = planLeg(terrain, slopes, from, stop.cell, routing);
     if ('error' in result) return { stops, error: { index, reason: result.error } };
-    stops.push({ task: stop.task.trim(), minutes: stop.minutes, leg: result.out });
+    stops.push({ task: stop.task.trim(), minutes: stop.minutes, leg: result });
     from = stop.cell;
   }
   if (!stops.length) return { stops, error: { index: 0, reason: 'pick' as const } };
-  const result = planMission(terrain, slopes, from, base, routing);
+  const result = planLeg(terrain, slopes, from, base, routing);
   if ('error' in result) return { stops, error: { index: stops.length, reason: result.error } };
-  const distance = stops.reduce((total, stop) => total + stop.leg.distanceM, result.out.distanceM);
+  const distance = stops.reduce((total, stop) => total + stop.leg.distanceM, result.distanceM);
+  const travel = stops.reduce((total, stop) => total + stop.leg.minutes, result.minutes);
   const work = stops.reduce((total, stop) => total + stop.minutes, 0);
-  return { stops, inbound: result.out, distance, work, delay, reserve: estimateReserve(distance, work, delay, settings) };
+  return { stops, inbound: result, distance, work, delay, reserve: estimateTimedReserve(travel, work, delay, settings) };
 }
 
 export type MissionPreview = ReturnType<typeof buildMission>;

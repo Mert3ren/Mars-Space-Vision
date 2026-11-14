@@ -26,9 +26,15 @@ export function terrainFrame(terrain: Terrain, scope: MapScope, grid: ElevationG
   const heightM = max.y - min.y;
   const northScale = 100 / Math.max(widthM, heightM);
   const eastScale = northScale * Math.cos((center.y + terrain.bounds.south) / terrain.radiusM);
-  const heights = grid.elevationM.filter((value): value is number => value !== null);
-  if (heights.length === 0) throw new Error('No elevation data for this scale');
-  const reference = (Math.min(...heights) + Math.max(...heights)) / 2;
+  let low = Infinity;
+  let high = -Infinity;
+  for (const elevation of grid.elevationM) {
+    if (elevation === null) continue;
+    low = Math.min(low, elevation);
+    high = Math.max(high, elevation);
+  }
+  if (!Number.isFinite(low)) throw new Error('No elevation data for this scale');
+  const reference = (low + high) / 2;
   return { min, max, center, widthM, heightM, eastScale, northScale, exaggeration, reference };
 }
 

@@ -633,11 +633,7 @@ main { max-width: 1680px; padding: 0 16px; }
 
 .dashboard--builder { grid-template-columns: minmax(0, 1fr) minmax(290px, 365px); }
 .dashboard--simulation { grid-template-columns: minmax(0, 1fr); }
-.dashboard--simulation .primary-col { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
-.dashboard--simulation .primary-col:has(> :only-child) { grid-template-columns: minmax(0, 1fr); }
 .dashboard--simulation .workspace-col { grid-area: 2 / 1; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); }
-.dashboard--simulation .map-stage, .helmet-stage { height: clamp(420px, 65dvh, 940px); }
-.helmet-panel .section-heading > svg { color: var(--acid); }
 .helmet-stage { position: relative; isolation: isolate; background: linear-gradient(#59485a 0%, #a07768 44%, #cb9778 78%, #a9745a); }
 .helmet-scene, .helmet-scene canvas { display: block; width: 100%; height: 100%; }
 .helmet-crosshair {
@@ -654,10 +650,6 @@ main { max-width: 1680px; padding: 0 16px; }
 .helmet-crosshair::before, .helmet-crosshair::after { content: ''; position: absolute; inset: 50% 4px auto; height: 1px; background: #d9fff1; }
 .helmet-crosshair::after { transform: rotate(90deg); }
 .helmet-coordinate { position: absolute; bottom: 9px; left: 9px; padding: 5px 7px; color: #d8f6e9; background: #15222dd9; border: 1px solid #40636b; border-radius: 4px; font: 11px Consolas, monospace; }
-.helmet-work { position: absolute; top: 10px; left: 10px; display: grid; gap: 4px; max-width: calc(100% - 20px); padding: 7px 9px; border: 1px solid #72baaf; border-radius: 4px; color: #d8fff5; background: #15222de8; overflow-wrap: anywhere; }
-.helmet-work span { font: 700 10px Consolas, monospace; }
-.helmet-work strong { font-size: 13px; }
-.mission-view-switch { display: none; width: max-content; margin-bottom: 8px; }
 .mission-editor-content { display: grid; gap: 9px; padding: 10px; min-width: 0; }
 .mission-field { display: grid; gap: 4px; min-width: 0; color: var(--muted); font-size: 11px; }
 .mission-field input, .mission-field select {
@@ -733,11 +725,6 @@ main { max-width: 1680px; padding: 0 16px; }
 .relief-map-astronaut { z-index: 2; }
 .relief-stop-label { position: absolute; left: 50%; bottom: calc(100% + 5px); transform: translateX(-50%); max-width: 130px; padding: 3px 5px; color: #c2f6ea; background: #101b27; border: 1px solid #4b837f; border-radius: 3px; font-size: 10px; text-align: center; overflow-wrap: anywhere; }
 
-@media (max-width: 1023px) {
-  .mission-view-switch { display: flex; }
-  .dashboard--simulation .primary-col { grid-template-columns: minmax(0, 1fr); }
-  .dashboard--simulation[data-mission-view=helmet] .map-panel, .dashboard--simulation[data-mission-view=map] .helmet-panel { display: none; }
-}
 
 @media (min-width: 1180px) {
   .command-deck .eva-panel { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
@@ -753,7 +740,6 @@ main { max-width: 1680px; padding: 0 16px; }
   .dashboard--builder .workspace-col { grid-area: 1 / 1; }
   .dashboard--builder .primary-col { grid-area: 2 / 1; }
   .dashboard--simulation.dashboard--spe .workspace-col { grid-area: 1 / 1; }
-  .helmet-stage { height: clamp(320px, 53dvh, 580px); }
   .map-panel { scroll-margin-top: calc(var(--console-header) + 113px); }
   .dashboard .map-stage { height: clamp(320px, 53dvh, 580px); }
   .dashboard--map .map-stage { height: clamp(360px, 61dvh, 650px); }
@@ -781,4 +767,82 @@ main { max-width: 1680px; padding: 0 16px; }
   .eva-phase { width: 100%; margin-left: 0; }
   .eva-reset { margin-left: 0; }
   .eva-task { grid-column: span 2; }
+}
+
+.dashboard--simulation .primary-col { display: block; }
+.dashboard--simulation.dashboard--spe .workspace-col { grid-area: 2 / 1; }
+.dashboard--simulation.dashboard--spe .primary-col { grid-area: 1 / 1; }
+.dashboard--simulation .map-stage--live { height: max(565px, calc(100dvh - 115px)); max-height: 1100px; }
+.map-stage--live { --camera-size: clamp(220px, 22vw, 320px); }
+.map-stage--live .helmet-panel {
+  position: absolute; right: 12px; bottom: 66px; z-index: 4; width: var(--camera-size);
+  overflow: hidden; border: 1px solid #64899a; border-radius: 7px; background: #0c1927;
+  box-shadow: 0 4px 18px #0009;
+}
+.map-stage--live .helmet-stage { height: auto; aspect-ratio: 1; }
+.helmet-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 3px; padding: 4px 6px; font-size: 11px; font-weight: 700; }
+.helmet-toolbar span, .helmet-toolbar button { display: inline-flex; align-items: center; gap: 4px; }
+.helmet-toolbar button { min-height: 24px; padding: 3px 5px; background: #142b3b; color: var(--text); border: 1px solid #426372; border-radius: 4px; cursor: pointer; font: inherit; }
+.helmet-toolbar button[aria-pressed=true] { color: var(--acid); }
+.helmet-resolution { position: absolute; top: 5px; left: 5px; padding: 3px 5px; background: #101d28dd; color: #deedf2; border-radius: 3px; font-size: 10px; }
+.map-stage--live .helmet-coordinate { left: 5px; bottom: 5px; padding: 3px 5px; }
+.map-stage--live .map-corner { right: calc(var(--camera-size) + 24px); top: auto; bottom: 68px; }
+.map-stage--live .relief-caption { display: none; }
+.map-stage--live .layer-note { max-width: calc(100% - var(--camera-size) - 25px); bottom: 66px; }
+.map-stage--live .layer-deck { top: auto; bottom: 120px; z-index: 5; }
+.map-stage--live .layer-deck > .button { width: 100%; margin-top: 4px; }
+.map-stage--live .eva-panel { position: absolute; inset: 0; z-index: 3; display: block; padding: 0; pointer-events: none; background: transparent; }
+.map-stage--live .eva-resources-live, .map-stage--live .eva-details, .map-stage--live .eva-controls {
+  position: absolute; pointer-events: auto; margin: 0; background: #0b1829ee;
+  border: 1px solid #415875; border-radius: 6px; box-shadow: 0 3px 14px #0006;
+}
+.eva-resources-live { top: 10px; left: 10px; display: grid; gap: 7px; width: 152px; padding: 8px; }
+.eva-resources-live > div { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px; }
+.eva-resources-live dt { display: flex; align-items: center; gap: 4px; font-size: 11px; }
+.eva-resources-live dd { margin: 0; font: 700 15px Consolas, monospace; }
+.eva-resources-live div > span { grid-column: 1 / -1; display: block; height: 4px; background: #263b4a; border-radius: 3px; overflow: hidden; }
+.eva-resources-live i { display: block; height: 100%; background: var(--acid); }
+.eva-resources-live [data-low=true] { color: var(--critical-text); }
+.eva-resources-live [data-low=true] i { background: var(--critical-border); }
+.eva-resources-live .reserve-warning { display: flex; }
+.eva-details { top: 10px; right: 10px; width: min(335px, calc(100% - 170px)); max-height: calc(100% - var(--camera-size) - 105px); overflow: auto; padding: 7px; }
+.eva-details > summary, .mission-events > summary { cursor: pointer; color: #daeff8; font-size: 12px; font-weight: 700; }
+.eva-details .eva-heading { margin: 6px 0; }
+.eva-details .eva-heading .section-heading { display: none; }
+.eva-details .eva-stats { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); }
+.eva-details .eva-stats div { min-width: 0; padding: 5px; }
+.eva-details .eva-stats dd { overflow-wrap: anywhere; font-size: 12px; }
+.eva-details .eva-task { max-width: none; }
+.map-stage--live .eva-controls { left: 10px; right: 10px; bottom: 8px; z-index: 6; justify-content: flex-start; padding: 4px; }
+.map-stage--live .eva-route-error { position: absolute; bottom: 62px; left: 10px; max-width: 250px; background: #0b1829ee; padding: 5px; }
+.mission-events { padding: 10px; }
+.mission-events summary span { margin-left: 8px; color: var(--muted); font-size: 11px; }
+.mission-events ol { display: grid; gap: 6px; margin: 9px 0 0; padding: 0; list-style: none; font-size: 12px; }
+.mission-events li { display: flex; gap: 9px; }
+.mission-events time { min-width: 42px; color: #8fcdc5; font-family: Consolas, monospace; }
+.mission-actions select { min-height: 33px; padding: 4px; border: 1px solid #415875; border-radius: 5px; background: #101d2c; color: var(--text); font: inherit; font-size: 12px; }
+.region-notice { padding: 6px 10px; color: var(--muted); font-size: 12px; }
+.shadow-key { background: #596099; }
+.no-shadow-data { background: #b593d2; }
+@media (min-width: 721px) and (max-width: 900px) {
+  .map-stage--live .helmet-panel { bottom: 94px; }
+  .map-stage--live .map-corner, .map-stage--live .layer-note { bottom: 96px; }
+}
+@media (max-width: 720px) {
+  .map-stage--live { --camera-size: clamp(112px, 31vw, 160px); }
+  .dashboard--simulation .map-stage--live { height: max(505px, calc(100dvh - 260px)); }
+  .map-stage--live .helmet-panel { right: 6px; bottom: 94px; }
+  .map-stage--live .map-corner { bottom: 96px; right: calc(var(--camera-size) + 14px); }
+  .map-stage--live .layer-note { bottom: 96px; }
+  .map-stage--live .layer-deck { bottom: 144px; }
+  .eva-resources-live { width: 114px; left: 6px; top: 6px; }
+  .eva-resources-live dd { font-size: 12px; }
+  .eva-details { top: 6px; right: 6px; width: min(213px, calc(100% - 128px)); max-height: 172px; }
+  .eva-details .eva-stats { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .eva-details .eva-phase { margin: 0; }
+  .map-stage--live .eva-controls { right: 6px; left: 6px; bottom: 6px; gap: 4px; }
+  .map-stage--live .eva-controls .button, .map-stage--live .eva-controls .leg-switch button { font-size: 10px; padding: 4px 5px; }
+  .helmet-toolbar, .helmet-resolution { font-size: 9px; }
+  .helmet-toolbar { padding: 2px 3px; }
+  .helmet-toolbar span svg { display: none; }
 }

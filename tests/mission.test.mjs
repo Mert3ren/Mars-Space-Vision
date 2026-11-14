@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { cellAt, cellCenter, DEFAULT_RESERVE_SETTINGS, estimateReserve, inspectTerrain, localPoint, planMission, slopeGrid, walkMinutes } from '../src/mission.ts';
+import { cellAt, cellCenter, DEFAULT_RESERVE_SETTINGS, edgeSlope, estimateReserve, inspectTerrain, localPoint, planLeg, planMission, slopeGrid, walkMinutes } from '../src/mission.ts';
 import { helmetPose, mapPoint, sampleElevation, terrainFrame, worldPoint } from '../src/terrainRelief.ts';
 import { arrivalMinutes, cameraLocation, cameraStops, compareRoutes, missionRoutes, stations } from '../src/galeRoutes.ts';
-import { activeEvaPath, advanceEva, createReturnPlanner, delayEva, divertEva, evaHeading, evaLocation, evaTelemetry, returnEva, startEva, startMissionEva } from '../src/eva.ts';
+import { activeEvaPath, advanceEva, createReturnPlanner, delayEva, divertEva, evaHeading, evaLocation, evaSearchSeeds, evaTelemetry, returnEva, startEva, startMissionEva } from '../src/eva.ts';
 import { findShelterCandidates, MIN_SKY_COVER, shelterOptions } from '../src/shelters.ts';
 import { buildMission } from '../src/missionDraft.ts';
+import { lightStatus, marsSun, radDose, radioStatus, reserveRange } from '../src/environment.ts';
 
 const gale = JSON.parse(readFileSync(new URL('../public/gale/terrain.json', import.meta.url), 'utf8'));
 const fixed = (row, col) => ({ row, col });
@@ -32,7 +33,7 @@ test('three-stop missions use ordered legs, hold during work, and match the prev
   assert.equal(reordered.stops[0].task, 'Sample soil');
   assert.deepEqual(reordered.stops[0].leg.path.at(-1), draft.stops[2].cell);
   const start = startMissionEva(terrain, draft.name, preview.stops, preview.inbound, DEFAULT_RESERVE_SETTINGS, 4);
-  assert.equal(start.speed, 60);
+  assert.equal(start.speed, 1);
   const working = advanceEva(start, walkMinutes(preview.stops[0].leg.distanceM) + 1);
   assert.equal(working.phase, 'stop');
   close(working.stopRemaining, 5);
@@ -44,6 +45,8 @@ test('three-stop missions use ordered legs, hold during work, and match the prev
   const done = advanceEva(next, 100);
   assert.equal(done.outcome, 'arrived');
   assert.equal(done.completedStops, 3);
+  assert.deepEqual(done.workEvents.map(({ index, kind }) => [index, kind]),
+    [[0, 'start'], [0, 'finish'], [1, 'start'], [1, 'finish'], [2, 'start'], [2, 'finish']]);
   assert.deepEqual(evaLocation(done).point, cellCenter(terrain, base));
   close(done.elapsed, preview.reserve.missionMinutes);
   const totals = evaTelemetry(done, null).current;
@@ -99,6 +102,72 @@ test('helmet camera pose follows the EVA location at a true 1.7 m eye height', (
     helmetPose(terrain, frame, evaLocation(waiting).point, evaHeading(waiting)));
 });
 
+test('directed suit limits block restrictive descents and cross-slope edges', () => {
+  const terrain = flatTerrain(10, 10);
+  const from = fixed(4, 4);
+  const to = fixed(4, 5);
+  const only = Array(100).fill(null);
+  only[44] = only[45] = 0;
+  terrain.elevationM[45] += 2.5;
+  assert.ok(edgeSlope(terrain, from, to).longitudinal > 12);
+  assert.ok(planLeg(terrain, only, from, to).minutes > walkMinutes(10));
+  assert.equal(planLeg(terrain, only, to, from).error, 'no_path');
+  terrain.elevationM[45] -= 2.5;
+  terrain.elevationM[34] += 4;
+  assert.ok(edgeSlope(terrain, from, to).cross > 10);
+  assert.equal(planLeg(terrain, only, from, to).error, 'no_path');
+});
+
+test('Boxwork route and assets use the sourced corridor and close at the projected time', () => {
+  const terrain = JSON.parse(readFileSync(new URL('../public/boxwork/terrain.json', import.meta.url), 'utf8'));
+  const valid = terrain.elevationM.filter(Number.isFinite);
+  assert.equal(terrain.cellM, 5);
+  assert.ok(Math.max(...valid) - Math.min(...valid) > 200);
+  const base = cellAt(terrain, localPoint(terrain, terrain.positions.base));
+  const goal = cellAt(terrain, localPoint(terrain, terrain.positions.science));
+  const slopes = slopeGrid(terrain);
+  const route = planMission(terrain, slopes, base, goal);
+  assert.ok(!('error' in route));
+  assert.notDeepEqual(route.out.path, [...route.back.path].reverse());
+  const session = startEva(terrain, route, 5, DEFAULT_RESERVE_SETTINGS);
+  const done = advanceEva(session, 50);
+  assert.equal(done.outcome, 'arrived');
+  close(done.elapsed, route.out.minutes + route.back.minutes + 5);
+  for (const region of ['gale', 'boxwork']) {
+    const detail = JSON.parse(readFileSync(new URL(`../public/${region}/helmet-grid.json`, import.meta.url), 'utf8'));
+    const file = readFileSync(new URL(`../public/${region}/helmet-elevation.bin`, import.meta.url));
+    assert.equal(detail.cellM, 2);
+    assert.equal(file.length, detail.width * detail.height * 2);
+  }
+});
+
+test('radio obstruction, terrain shadows, RAD and return range use simulation inputs', () => {
+  const terrain = flatTerrain(48, 48);
+  const point = cellCenter(terrain, fixed(23, 15));
+  const base = cellCenter(terrain, fixed(23, 30));
+  const unit = { east: 1, north: 0, up: 0.05, elevation: 3, azimuth: 90 };
+  assert.equal(radioStatus(terrain, point, base), 'Connected');
+  assert.equal(lightStatus(terrain, point, unit), 'Sunlit');
+  terrain.elevationM[23 * terrain.width + 20] += 12;
+  assert.equal(radioStatus(terrain, point, base), 'Terrain blocked');
+  assert.equal(lightStatus(terrain, point, unit), 'In shadow');
+  assert.equal(radioStatus(terrain, point, cellCenter(terrain, fixed(23, 47))), 'Out of range');
+  assert.equal(lightStatus(terrain, point, { ...unit, up: -0.1 }), 'Night');
+  assert.notEqual(marsSun(terrain, point, 0).azimuth, marsSun(terrain, point, 60).azimuth);
+  const primeMeridian = { ...terrain, bounds: { ...terrain.bounds, west: 0, south: 0 } };
+  const workedExample = marsSun(primeMeridian, { x: 0, y: 0 }, 0, Date.UTC(2000, 0, 6), 64_184);
+  assert.ok(Math.abs(workedExample.azimuth - 191.03905) < 0.002);
+  assert.ok(Math.abs(workedExample.elevation - (90 - 154.26182)) < 0.002);
+  close(radDose(60, 30), (265 + 417) / 48);
+  const baseCell = fixed(23, 15);
+  const slopes = slopeGrid(terrain);
+  const leg = planMission(terrain, slopes, baseCell, fixed(23, 18));
+  const session = startEva(terrain, leg, 0, DEFAULT_RESERVE_SETTINGS);
+  const generous = reserveRange(terrain, slopes, baseCell, session, 18);
+  const almostEmpty = reserveRange(terrain, slopes, baseCell, { ...session, elapsed: 69 }, 18, generous.inbound);
+  assert.ok(generous.cells.reduce((a, b) => a + b, 0) > almostEmpty.cells.reduce((a, b) => a + b, 0));
+});
+
 test('reserve budget recommends the longest whole-minute stop at or above the threshold', () => {
   const baseline = estimateReserve(934, 15, 40);
   assert.equal(baseline.maxFieldworkMinutes, 1);
@@ -132,13 +201,15 @@ test('Gale alternatives are distinct valid round trips through different scenari
   const { options, error } = missionRoutes(gale, slopes, start, stop);
   assert.equal(error, null);
   assert.deepEqual(options.map(({ code }) => code), ['A', 'B', 'C']);
-  assert.deepEqual(options.map((route) => Math.round(arrivalMinutes(route, 'out'))), [14, 17, 20]);
-  assert.deepEqual(options.map((route) => Math.round(arrivalMinutes(route, 'back', 15))), [43, 49, 56]);
-  assert.deepEqual(options.map((route) => Math.round(arrivalMinutes(route, 'back', 55))), [83, 89, 96]);
+  assert.deepEqual(options.map((route) => Math.round(arrivalMinutes(route, 'out'))), [16, 19, 22]);
+  assert.deepEqual(options.map((route) => Math.round(arrivalMinutes(route, 'back', 15))), [46, 54, 60]);
+  assert.deepEqual(options.map((route) => Math.round(arrivalMinutes(route, 'back', 55))), [86, 94, 100]);
   for (const [i, route] of options.entries()) {
     assert.deepEqual(route.out.path[0], start);
     assert.deepEqual(route.out.path.at(-1), stop);
-    assert.deepEqual(route.back.path, [...route.out.path].reverse());
+    assert.deepEqual(route.back.path[0], stop);
+    assert.deepEqual(route.back.path.at(-1), start);
+    assert.notEqual(route.back.minutes, route.out.minutes);
     assert.ok(route.out.maxSlope <= 18);
     assert.equal(route.out.profile.length, route.out.path.length);
     assert.equal(route.out.profile.at(-1).distanceM, route.out.distanceM);
@@ -192,7 +263,7 @@ test('route recommendations follow the priority and exclude options below the cu
   const compare = (delay, priority) => compareRoutes(options, 15, delay, DEFAULT_RESERVE_SETTINGS, priority);
   assert.equal(compare(0, 'balanced').recommended.route.code, 'A');
   assert.equal(compare(0, 'gentler').recommended.route.code, 'C');
-  assert.equal(compare(16, 'gentler').recommended.route.code, 'A');
+  assert.equal(compare(17, 'gentler').recommended.route.code, 'A');
   assert.equal(compare(40, 'balanced').recommended, undefined);
 });
 
@@ -348,22 +419,22 @@ test('Gale Route B diverges from its planned reserve after a Station 1 delay and
   const route = missionRoutes(gale, slopes, base, goal).options.find(({ code }) => code === 'B');
   const station = cellAt(gale, stations[0].point);
   const index = route.out.path.findIndex(({ row, col }) => row === station.row && col === station.col);
-  const betweenCells = (route.out.profile[index - 1].distanceM + route.out.profile[index].distanceM) / 2;
+  const betweenCells = (route.out.profile[index - 1].minutes + route.out.profile[index].minutes) / 2;
   const planReturn = createReturnPlanner(gale, slopes, base, 18);
-  const walking = advanceEva(startEva(gale, route, 15, DEFAULT_RESERVE_SETTINGS), walkMinutes(betweenCells));
+  const walking = advanceEva(startEva(gale, route, 15, DEFAULT_RESERVE_SETTINGS), betweenCells);
   const position = evaLocation(walking);
   assert.equal(position.endpoints.length, 2);
   const delayed = delayEva(walking);
   assert.equal(delayed.elapsed, walking.elapsed + 40);
   assert.equal(delayed.paused, true);
   assert.deepEqual(evaLocation(delayed), position);
-  const candidates = position.endpoints.map(({ vertex, offsetM }) => offsetM +
-    planMission(gale, slopes, vertex.cell, base, { priority: 'shortest', slopeLimit: 18 }).out.distanceM);
+  const candidates = evaSearchSeeds(gale, position, 18).map(({ cell, minutes }) => minutes +
+    planLeg(gale, slopes, cell, base, { priority: 'shortest', slopeLimit: 18 }).minutes);
   const option = planReturn(position);
-  assert.ok(Math.abs(option.distanceM - Math.min(...candidates)) < 1e-8);
+  close(option.minutes, Math.min(...candidates));
   const telemetry = evaTelemetry(delayed, option);
-  assert.ok(Math.abs(telemetry.continuePlan.margin - -19.34) < 1);
-  assert.ok(Math.abs(telemetry.returnNow.margin - 18.39) < 1);
+  close(telemetry.continuePlan.margin, 70 - 55 - route.out.minutes - route.back.minutes);
+  close(telemetry.returnNow.margin, 70 - delayed.elapsed - option.minutes);
   const returning = returnEva(delayed, planReturn);
   assert.equal(returning.phase, 'inbound');
   assert.equal(returning.paused, false);

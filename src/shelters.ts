@@ -1,6 +1,6 @@
-import { cellCenter, estimateReserve, RESERVE_EPSILON, walkMinutes } from './mission.ts';
+import { cellCenter, estimateTimedReserve, RESERVE_EPSILON, searchPath, traverseSearch } from './mission.ts';
 import type { Cell, LocalPoint, Terrain } from './mission.ts';
-import { createReturnPlanner, evaLocation, pathFromLocation } from './eva.ts';
+import { evaLocation, evaSearchSeeds, pathFromSearch } from './eva.ts';
 import type { EvaSession } from './eva.ts';
 
 export const SHELTER_RADIUS_M = 150;
@@ -68,29 +68,29 @@ export function findShelterCandidates(terrain: Terrain, slopes: (number | null)[
 export function shelterOptions(terrain: Terrain, slopes: (number | null)[], slopeLimit: number,
   candidates: ShelterCandidate[], session: EvaSession) {
   const location = evaLocation(session);
+  const origins = evaSearchSeeds(terrain, location, slopeLimit);
+  const search = traverseSearch(terrain, slopes, origins, { priority: 'shortest', slopeLimit }, { maxMinutes: MAX_SEARCH_MINUTES });
   const eastScale = Math.cos((terrain.bounds.south + terrain.bounds.north) / 2 / terrain.radiusM);
   const distance = (a: LocalPoint, b: LocalPoint) => Math.hypot((a.x - b.x) * eastScale, a.y - b.y);
-  const options = [];
-  for (const candidate of candidates) {
-    if (walkMinutes(distance(candidate.point, location.point)) > MAX_SEARCH_MINUTES + RESERVE_EPSILON) continue;
-    const option = createReturnPlanner(terrain, slopes, candidate.cell, slopeLimit)(location);
-    if (!option) continue;
-    const eta = walkMinutes(option.distanceM);
-    if (eta > MAX_SEARCH_MINUTES + RESERVE_EPSILON) continue;
-    const arrival = estimateReserve(option.distanceM, 0, session.elapsed, session.plan.settings);
-    const resourcesLast = arrival.missionMinutes < arrival.depletion.depletionMinutes - RESERVE_EPSILON;
-    options.push({ candidate, path: pathFromLocation(location, option), eta, arrival, resourcesLast });
-  }
-  options.sort((a, b) => Number(b.resourcesLast) - Number(a.resourcesLast) || a.eta - b.eta ||
+  const remaining = session.plan.depletionMinutes - session.elapsed - RESERVE_EPSILON;
+  const options = candidates.flatMap((candidate) => {
+    const eta = search.costs[search.toIndex(candidate.cell)];
+    return Number.isFinite(eta) ? [{ candidate, eta, resourcesLast: eta < remaining }] : [];
+  }).sort((a, b) => Number(b.resourcesLast) - Number(a.resourcesLast) || a.eta - b.eta ||
     b.candidate.cover - a.candidate.cover || b.candidate.concavity - a.candidate.concavity);
-  const distinct: typeof options = [];
-  for (const option of options) {
-    if (distinct.some((prior) => distance(prior.candidate.point, option.candidate.point) < MIN_SEPARATION_M)) continue;
-    distinct.push(option);
+  const distinct: ShelterOption[] = [];
+  for (const { candidate, eta, resourcesLast } of options) {
+    if (distinct.some((prior) => distance(prior.candidate.point, candidate.point) < MIN_SEPARATION_M)) continue;
+    const cells = searchPath(search, candidate.cell);
+    const seed = cells && origins.find(({ cell }) => cell.row === cells[0].row && cell.col === cells[0].col);
+    if (!cells || !seed) continue;
+    distinct.push({ candidate, eta, resourcesLast, path: pathFromSearch(terrain, location, cells, seed),
+      arrival: estimateTimedReserve(eta, 0, session.elapsed, session.plan.settings) });
     if (distinct.length === 3) break;
   }
   return distinct;
 }
 
-export type ShelterOption = ReturnType<typeof shelterOptions>[number];
+export type ShelterOption = { candidate: ShelterCandidate; eta: number; resourcesLast: boolean;
+  path: ReturnType<typeof pathFromSearch>; arrival: ReturnType<typeof estimateTimedReserve> };
 export type ShelterPin = { id: string; point: LocalPoint; selected: boolean };

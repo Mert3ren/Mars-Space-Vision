@@ -4,6 +4,8 @@ import type { Cell, Leg, LocalPoint, Terrain } from './mission';
 import type { ShelterPin } from './shelters';
 import { createMapSymbol } from './mapSymbols';
 import type { MissionPin, SymbolKind } from './mapSymbols';
+import type { GridOverlay } from './terrainWorker';
+import { regionAsset } from './regionAssets';
 import { cellAt, cellCenter, displayPosition, localPoint } from './mission';
 import { cameraLocation, cameraStops, stations } from './galeRoutes';
 import galeOverview from './galeOverview.json';
@@ -56,6 +58,8 @@ export type MapProps = {
   shelterPins: ShelterPin[];
   missionPins?: MissionPin[];
   missionReturnPoints?: LocalPoint[];
+  reserveOverlay?: GridOverlay;
+  shadowOverlay?: GridOverlay;
   layer: LayerMode;
   slopeLimit: number;
   scope: MapScope;
@@ -73,6 +77,20 @@ export type MapProps = {
 };
 
 const asset = (path: string) => `${import.meta.env.BASE_URL}gale/${path}`;
+
+export function gridOverlayImage(grid: GridOverlay, kind: 'reserve' | 'shadow') {
+  const canvas = document.createElement('canvas');
+  canvas.width = grid.width;
+  canvas.height = grid.height;
+  const context = canvas.getContext('2d')!;
+  const image = context.createImageData(grid.width, grid.height);
+  grid.values.forEach((value, index) => {
+    if (!value) return;
+    image.data.set(kind === 'reserve' ? [43, 211, 172, 88] : value === 2 ? [181, 147, 210, 85] : [28, 31, 70, 140], index * 4);
+  });
+  context.putImageData(image, 0, 0);
+  return canvas;
+}
 
 function geographicBounds(terrain: Terrain, { west, south, east, north }: typeof galeOverview.bounds) {
   return L.latLngBounds(
@@ -129,7 +147,7 @@ function assetPopup(name: string, category: string, detail: string) {
 
 export function TerrainMap(props: MapProps) {
   const { terrain, slopes, start, target, activeLeg, activeColor, activeDashed, activeDirection, layer, slopeLimit, scope, expanded, opacity,
-    evaPoint, evaPoints, shelterPins, missionPins, missionReturnPoints, heading, mode, inspection, showRover, showStations, command } = props;
+    evaPoint, evaPoints, shelterPins, missionPins, missionReturnPoints, reserveOverlay, shadowOverlay, heading, mode, inspection, showRover, showStations, command } = props;
   const callbacks = useRef(props);
   callbacks.current = props;
   const element = useRef<HTMLDivElement>(null);
@@ -176,7 +194,7 @@ export function TerrainMap(props: MapProps) {
       pane.style.zIndex = '220';
       pane.style.display = type === callbacks.current.scope ? '' : 'none';
       pane.style.pointerEvents = 'none';
-      L.imageOverlay(asset(images[type].image), scopes[type], {
+      L.imageOverlay(type === 'traverse' ? regionAsset(terrain.region ?? 'gale', images[type].image) : asset(images[type].image), scopes[type], {
         alt: images[type].alt,
         className: 'optical-imagery',
         pane: `${type}Imagery`,
@@ -248,6 +266,16 @@ export function TerrainMap(props: MapProps) {
     const url = layer === 'slope' ? slopeImage(terrain, slopes, slopeLimit) : asset('thermal.webp');
     overlay.current = L.imageOverlay(url, extent, { opacity: callbacks.current.opacity, zIndex: 2 }).addTo(map);
   }, [layer, scope, terrain, slopes, slopeLimit]);
+
+  useEffect(() => {
+    const map = instance.current;
+    const bounds = viewBounds.current?.traverse;
+    if (!map || !bounds || scope !== 'traverse') return;
+    const group = L.layerGroup().addTo(map);
+    if (shadowOverlay) L.imageOverlay(gridOverlayImage(shadowOverlay, 'shadow').toDataURL(), bounds, { zIndex: 3 }).addTo(group);
+    if (reserveOverlay) L.imageOverlay(gridOverlayImage(reserveOverlay, 'reserve').toDataURL(), bounds, { zIndex: 4 }).addTo(group);
+    return () => { group.remove(); };
+  }, [terrain, scope, reserveOverlay, shadowOverlay]);
 
   useEffect(() => {
     overlay.current?.setOpacity(opacity);
@@ -360,7 +388,7 @@ export function TerrainMap(props: MapProps) {
     if (!group) return;
     group.clearLayers();
     if (!showStations || scope === 'crater' || mode) return;
-    for (const station of stations) {
+    for (const station of terrain.region === 'boxwork' ? [] : stations) {
       assetPin('station', station.name, pointToLatLng(station.point))
         .bindTooltip(station.name, { permanent: scope === 'traverse', direction: 'bottom', offset: [0, 11], className: 'place-label' })
         .bindPopup(assetPopup(station.name, 'SIMULATED EVA STATION', station.detail))

@@ -4,6 +4,7 @@ import type { EvaSession, EvaSpeed, evaTelemetry } from './eva';
 import { RESERVE_EPSILON } from './mission';
 
 type Telemetry = ReturnType<typeof evaTelemetry>;
+type Environment = { radio: string; light: string; dose: number; longitudinal?: number; cross?: number };
 
 function duration(minutes: number, roundUp = false) {
   const seconds = (roundUp ? Math.ceil : Math.floor)(minutes * 60 + (roundUp ? -1e-6 : 1e-6));
@@ -20,9 +21,10 @@ function marginLabel(value: number) {
   return `${value < 0 ? '−' : '+'}${absolute < 1 ? '<1' : Math.round(absolute)} min`;
 }
 
-export function EvaPanel({ session, telemetry, routeCode, reviewingSPE, onSPE, onTogglePause, onSpeed, onDelay, onReturn, onReset }: {
+export function EvaPanel({ session, telemetry, environment, routeCode, reviewingSPE, onSPE, onTogglePause, onSpeed, onDelay, onReturn, onReset }: {
   session: EvaSession;
   telemetry: Telemetry;
+  environment: Environment;
   routeCode?: string;
   reviewingSPE: boolean;
   onSPE: () => void;
@@ -48,15 +50,27 @@ export function EvaPanel({ session, telemetry, routeCode, reviewingSPE, onSPE, o
   const canReturn = (!outcome || outcome === 'sheltered') && phase !== 'inbound';
   const followingPlan = phase === 'outbound' || phase === 'stop';
   return <section className="eva-panel" aria-label="EVA telemetry">
+    <dl className="eva-resources-live" aria-label="Live resources">
+      {telemetry.current.resources.map((resource) => {
+        const Icon = resource.name === 'Oxygen' ? Droplets : BatteryCharging;
+        const low = resource.remaining < session.plan.settings.minimum;
+        return <div key={resource.name} data-low={low}>
+          <dt><Icon size={13} />{resource.name}</dt><dd>{percent(resource.remaining)}</dd>
+          <span aria-hidden="true"><i style={{ width: percent(resource.remaining) }} /></span>
+        </div>;
+      })}
+      {(belowReserve || belowReturn) && <div className="reserve-warning reserve-warning--badge" role="status">
+        <TriangleAlert size={13} /> Below reserve
+      </div>}
+    </dl>
+    <details className="eva-details" open>
+      <summary>Mission status</summary>
     <div className="eva-heading">
       <div className="section-heading"><Activity size={16} /><h3>EVA telemetry</h3></div>
       <span className="simulation-chip">{session.plan.name ?? `Route ${routeCode ?? '—'}`} · Simulated</span>
       <strong className="eva-phase" role="status" data-state={outcome ?? (paused || reviewingSPE ? 'paused' : 'running')}>
         {headline}{!outcome && paused && !reviewingSPE && ' · Paused'}
       </strong>
-      {(belowReserve || belowReturn) && <span className="reserve-warning reserve-warning--badge" role="status">
-        <TriangleAlert size={13} /> Below reserve
-      </span>}
     </div>
     <dl className="eva-stats">
       <div><dt>Elapsed</dt><dd>{duration(elapsed)} <small>m:s</small></dd></div>
@@ -66,13 +80,11 @@ export function EvaPanel({ session, telemetry, routeCode, reviewingSPE, onSPE, o
       {task && phase === 'stop' && !outcome && <div><dt>Work left</dt><dd>{duration(session.stopRemaining, true)} <small>m:s</small></dd></div>}
       <div><dt>Distance left</dt><dd>{outcome === 'depleted' ? '—' : `${Math.round(telemetry.remainingM)} m`}</dd></div>
       <div><dt>{phase === 'shelter' ? 'Candidate ETA' : 'Base ETA'}</dt><dd>{outcome === 'depleted' ? '—' : <>{duration(telemetry.remainingMinutes, true)} <small>m:s</small></>}</dd></div>
-      {telemetry.current.resources.map((resource) => {
-        const Icon = resource.name === 'Oxygen' ? Droplets : BatteryCharging;
-        return <div key={resource.name}>
-          <dt><Icon size={12} />{resource.name}</dt>
-          <dd data-low={resource.remaining < session.plan.settings.minimum}>{percent(resource.remaining)}</dd>
-        </div>;
-      })}
+      <div><dt>Radio · 300 m</dt><dd data-low={environment.radio !== 'Connected'}>{environment.radio}</dd></div>
+      <div><dt>Lighting</dt><dd>{environment.light}</dd></div>
+      <div><dt>Grade / cross-slope</dt><dd>{environment.longitudinal === undefined ? '—' :
+        `${environment.longitudinal.toFixed(1)}° / ${environment.cross?.toFixed(1)}°`}</dd></div>
+      <div><dt>RAD reference dose</dt><dd>{environment.dose.toFixed(2)} µGy</dd></div>
       <div className="eva-reserve-readout">
         <dt>{followingPlan && !outcome ? 'Continue reserve' : 'Base reserve'}</dt>
         <dd data-low={belowReserve}>{reserve ? marginLabel(reserve.margin) : '—'}</dd>
@@ -84,6 +96,7 @@ export function EvaPanel({ session, telemetry, routeCode, reviewingSPE, onSPE, o
         </dd>
       </div>}
     </dl>
+    </details>
     <div className="eva-controls">
       {!outcome && !reviewingSPE && <>
         <button className="button" onClick={onTogglePause}>

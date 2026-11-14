@@ -5,20 +5,24 @@ import type { TerrainRequest, TerrainResponse } from './terrainWorker';
 
 type Work = Exclude<TerrainRequest, { type: 'init' }>;
 type WorkType = Work['type'];
-type WorkerResults = Partial<Record<WorkType, TerrainResponse>>;
+type WorkInput = {
+  [Type in WorkType]: Omit<Extract<Work, { type: Type }>, 'id'>
+};
+type WorkerResults = Partial<Record<WorkType, { input?: WorkInput[WorkType]; response: TerrainResponse }>>;
 
 export function useTerrainWorker(terrain: Terrain, slopes: (number | null)[], eva: EvaSession | null,
   base: Cell, slopeLimit: number, spe: boolean, range: boolean, shadow: boolean,
-  routes: Omit<Extract<Work, { type: 'routes' }>, 'id'>,
-  draft: Omit<Extract<Work, { type: 'draft' }>, 'id'> | null) {
+  routes: WorkInput['routes'], draft: WorkInput['draft'] | null) {
   const [results, setResults] = useState<WorkerResults>({});
   const worker = useRef<Worker | null>(null);
   const latest = useRef(eva);
   latest.current = eva;
   const serial = useRef(0);
-  const pending = useRef<Partial<Record<WorkType, number>>>({});
+  const pending = useRef<Partial<Record<WorkType, { id: number; input?: WorkInput[WorkType] }>>>({});
   const terrainId = terrain.region ?? 'gale';
-  const [unavailable, setUnavailable] = useState(false);
+  const [failedTerrain, setFailedTerrain] = useState<Terrain | null>(null);
+  const unavailable = failedTerrain === terrain;
+  const returnRequest = useMemo(() => ({ type: 'return' as const, base, slopeLimit }), [base, slopeLimit]);
   const rangeBucket = eva ? Math.floor(eva.elapsed * 6) : 0;
   const shadowBucket = Math.floor((eva?.elapsed ?? 0) / 5);
   const rangeActive = Boolean(eva && range && !eva.outcome);
@@ -28,17 +32,23 @@ export function useTerrainWorker(terrain: Terrain, slopes: (number | null)[], ev
     try {
       worker.current = new Worker(new URL('./terrainWorker.ts', import.meta.url), { type: 'module' });
     } catch {
-      setUnavailable(true);
+      setFailedTerrain(terrain);
       return;
     }
     const instance = worker.current;
     instance.onmessage = ({ data }: MessageEvent<TerrainResponse>) => {
       const type = data.type === 'error' ? data.request : data.type;
-      if (pending.current[type] !== data.id) return;
+      const request = pending.current[type];
+      if (worker.current !== instance || request?.id !== data.id) return;
       delete pending.current[type];
-      setResults((previous) => ({ ...previous, [type]: data }));
+      setResults((previous) => ({ ...previous, [type]: { input: request.input, response: data } }));
     };
-    instance.onerror = () => { pending.current = {}; setUnavailable(true); };
+    instance.onerror = () => {
+      instance.terminate();
+      worker.current = null;
+      pending.current = {};
+      setFailedTerrain(terrain);
+    };
     instance.postMessage({ type: 'init', terrain, slopes } satisfies TerrainRequest);
     return () => {
       instance.terminate();
@@ -49,33 +59,35 @@ export function useTerrainWorker(terrain: Terrain, slopes: (number | null)[], ev
 
   useEffect(() => {
     const id = ++serial.current;
-    pending.current.routes = id;
-    setResults((previous) => ({ ...previous, routes: undefined }));
+    pending.current.routes = { id, input: routes };
     worker.current?.postMessage({ ...routes, id } satisfies Work);
     return () => { delete pending.current.routes; };
-  }, [routes]);
+  }, [terrain, slopes, routes]);
 
   useEffect(() => {
     if (!draft) return;
     const id = ++serial.current;
-    pending.current.draft = id;
-    setResults((previous) => ({ ...previous, draft: undefined }));
-    worker.current?.postMessage({ ...draft, id } satisfies Work);
-    return () => { delete pending.current.draft; };
-  }, [draft]);
+    const timer = window.setTimeout(() => {
+      pending.current.draft = { id, input: draft };
+      worker.current?.postMessage({ ...draft, id } satisfies Work);
+    }, 150);
+    return () => {
+      window.clearTimeout(timer);
+      delete pending.current.draft;
+    };
+  }, [terrain, slopes, draft]);
 
   useEffect(() => {
     const id = ++serial.current;
-    pending.current.return = id;
-    setResults((previous) => ({ ...previous, return: undefined }));
-    worker.current?.postMessage({ type: 'return', id, base, slopeLimit } satisfies Work);
+    pending.current.return = { id, input: returnRequest };
+    worker.current?.postMessage({ ...returnRequest, id } satisfies Work);
     return () => { delete pending.current.return; };
-  }, [base, slopeLimit]);
+  }, [terrain, slopes, returnRequest]);
 
   useEffect(() => {
     if (!spe || !latest.current) return;
     const id = ++serial.current;
-    pending.current.spe = id;
+    pending.current.spe = { id };
     setResults((previous) => ({ ...previous, spe: undefined }));
     worker.current?.postMessage({ type: 'spe', id, session: latest.current, slopeLimit } satisfies Work);
     return () => { delete pending.current.spe; setResults((previous) => ({ ...previous, spe: undefined })); };
@@ -84,7 +96,7 @@ export function useTerrainWorker(terrain: Terrain, slopes: (number | null)[], ev
   useEffect(() => {
     if (!rangeActive || !latest.current || pending.current.range !== undefined || rangeRefresh.current === rangeBucket) return;
     const id = ++serial.current;
-    pending.current.range = id;
+    pending.current.range = { id };
     rangeRefresh.current = rangeBucket;
     worker.current?.postMessage({ type: 'range', id, session: latest.current, base, slopeLimit } satisfies Work);
   }, [rangeActive, rangeBucket, base, slopeLimit, terrainId, results.range]);
@@ -99,21 +111,27 @@ export function useTerrainWorker(terrain: Terrain, slopes: (number | null)[], ev
   useEffect(() => {
     if (!shadow) return;
     const id = ++serial.current;
-    pending.current.shadow = id;
+    pending.current.shadow = { id };
     worker.current?.postMessage({ type: 'shadow', id, minutes: shadowBucket * 5 } satisfies Work);
     return () => { delete pending.current.shadow; };
   }, [shadow, shadowBucket, terrainId]);
 
-  return useMemo(() => ({
-    routes: results.routes?.type === 'routes' ? results.routes.result : undefined,
-    routesFailed: unavailable || results.routes?.type === 'error',
-    draft: results.draft?.type === 'draft' ? results.draft.result : undefined,
-    draftFailed: unavailable || results.draft?.type === 'error',
-    tree: results.return?.type === 'return' ? results.return.tree : undefined,
-    treeFailed: unavailable || results.return?.type === 'error',
-    spe: spe && results.spe?.type === 'spe' ? results.spe.options : undefined,
-    speFailed: unavailable || results.spe?.type === 'error',
-    range: rangeActive && results.range?.type === 'range' ? results.range.grid : undefined,
-    shadow: shadow && results.shadow?.type === 'shadow' ? results.shadow.grid : undefined,
-  }), [spe, results, unavailable, rangeActive, shadow]);
+  const routeResult = results.routes?.input === routes ? results.routes.response : undefined;
+  const draftResult = draft && results.draft?.input === draft ? results.draft.response : undefined;
+  const treeResult = results.return?.input === returnRequest ? results.return.response : undefined;
+  const speResult = results.spe?.response;
+  const rangeResult = results.range?.response;
+  const shadowResult = results.shadow?.response;
+  return {
+    routes: routeResult?.type === 'routes' ? routeResult.result : undefined,
+    routesFailed: unavailable || routeResult?.type === 'error',
+    draft: draftResult?.type === 'draft' ? draftResult.result : undefined,
+    draftFailed: unavailable || draftResult?.type === 'error',
+    tree: treeResult?.type === 'return' ? treeResult.tree : undefined,
+    treeFailed: unavailable || treeResult?.type === 'error',
+    spe: spe && speResult?.type === 'spe' ? speResult.options : undefined,
+    speFailed: unavailable || speResult?.type === 'error',
+    range: rangeActive && rangeResult?.type === 'range' ? rangeResult.grid : undefined,
+    shadow: shadow && shadowResult?.type === 'shadow' ? shadowResult.grid : undefined,
+  };
 }

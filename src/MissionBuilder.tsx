@@ -33,8 +33,16 @@ export function MissionBuilder({ draft, terrain, base, preview, routing, pick, l
   onPick: (pick: MissionPick) => void;
   onSimulate: () => void;
 }) {
-  const valid = Boolean(draft.name.trim() && draft.stops.every((stop) => stop.task.trim()) && preview.reserve &&
-    !loading && !failed && returnReady);
+  const missingPoint = draft.stops.findIndex((stop) => !stop.cell);
+  const missingTask = draft.stops.findIndex((stop) => !stop.task.trim());
+  const startHint = !draft.name.trim() ? 'Enter a mission name to start.'
+    : missingPoint >= 0 ? `Choose a point on the map for stop ${missingPoint + 1}.`
+    : missingTask >= 0 ? `Describe the task at stop ${missingTask + 1}.`
+    : failed ? 'Traverse analysis is unavailable.'
+    : loading ? 'Calculating traverse…'
+    : !preview.reserve ? 'Resolve the route error to start.'
+    : !returnReady ? 'Calculating routes back to base…'
+    : null;
   const update = (index: number, stop: DraftStop) => onDraft({ ...draft,
     stops: draft.stops.map((current, i) => i === index ? stop : current) });
   function move(index: number, offset: number) {
@@ -89,8 +97,6 @@ export function MissionBuilder({ draft, terrain, base, preview, routing, pick, l
       {preview.error?.index === draft.stops.length && <p className="mission-editor-error" role="status">
         Return to base · {errors[preview.error.reason]}
       </p>}
-      {loading && <p className="muted" role="status">Calculating traverse…</p>}
-      {failed && <p className="mission-editor-error" role="alert">Traverse analysis is unavailable.</p>}
       {reserve && preview.inbound && <div className="mission-estimate">
         <dl>
           <div><dt>Return leg</dt><dd>{formatMinutes(preview.inbound.minutes)}</dd></div>
@@ -103,7 +109,9 @@ export function MissionBuilder({ draft, terrain, base, preview, routing, pick, l
         </dl>
         {below && <p className="reserve-warning"><TriangleAlert size={13} /> Below reserve{reserve.missionMinutes > reserve.depletion.depletionMinutes ? ` · ${reserve.depletion.name} runs out` : ''}</p>}
       </div>}
-      <button className="button button--primary" disabled={!valid} onClick={onSimulate}><Play size={15} /> Simulate Mission</button>
+      {startHint && <p id="mission-start-hint" className={failed ? 'mission-editor-error' : 'muted'} role="status">{startHint}</p>}
+      <button className="button button--primary" disabled={Boolean(startHint)} aria-describedby={startHint ? 'mission-start-hint' : undefined}
+        onClick={onSimulate}><Play size={15} /> Simulate Mission</button>
     </div>
   </section>;
 }

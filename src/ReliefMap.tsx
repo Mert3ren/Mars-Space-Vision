@@ -16,7 +16,7 @@ import { arrivalMinutes, cameraLocation, cameraStops, stations } from './galeRou
 import type { RouteId, RouteOption } from './galeRoutes';
 import { symbolGlyph } from './mapSymbols';
 import type { SymbolKind } from './mapSymbols';
-import { regionAsset } from './regionAssets';
+import { regionAsset, regionLabels } from './regionAssets';
 
 const asset = (path: string) => `${import.meta.env.BASE_URL}gale/${path}`;
 const panorama = { crater: galeOverview.image, region: galeOverview.region.image, traverse: 'optical.webp' };
@@ -100,11 +100,12 @@ function loadHelmetGrid(region: NonNullable<Terrain['region']>) {
   return load;
 }
 
-export function HelmetView({ terrain, point, heading, relief, sun, shadowed, onFallback }: {
+export function HelmetView({ terrain, point, heading, relief, sun, shadowed, grade, onFallback }: {
   terrain: Terrain; point: LocalPoint; heading: LocalPoint; relief: boolean;
-  sun: { east: number; north: number; up: number }; shadowed: boolean; onFallback: () => void;
+  sun: { east: number; north: number; up: number }; shadowed: boolean; grade?: number; onFallback: () => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
+  const bearingReadout = useRef<HTMLSpanElement>(null);
   const live = useRef({ point, heading, sun, relief, shadowed });
   live.current = { point, heading, sun, relief, shadowed };
   const [detail, setDetail] = useState<HelmetGrid>();
@@ -132,7 +133,7 @@ export function HelmetView({ terrain, point, heading, relief, sun, shadowed, onF
     }
     renderer.setPixelRatio(Math.max(1.5, Math.min(2.5, window.devicePixelRatio)));
     renderer.domElement.setAttribute('role', 'img');
-    renderer.domElement.setAttribute('aria-label', 'Simulated first-person view of Gale terrain');
+    renderer.domElement.setAttribute('aria-label', `Simulated first-person view of ${regionLabels[region]}`);
     element.appendChild(renderer.domElement);
     const scene = new THREE.Scene();
     scene.fog = new THREE.Fog('#bb856a', 8, 29);
@@ -197,6 +198,13 @@ export function HelmetView({ terrain, point, heading, relief, sun, shadowed, onF
           const blend = frameTime === undefined ? 1 : 1 - Math.exp(-Math.min(80, time - frameTime) / 135);
           camera.rotation.y += Math.atan2(Math.sin(delta), Math.cos(delta)) * blend;
         }
+        const bearing = THREE.MathUtils.euclideanModulo(Math.round(-THREE.MathUtils.radToDeg(camera.rotation.y)), 360);
+        const readout = bearingReadout.current;
+        if (readout && readout.dataset.bearing !== String(bearing)) {
+          readout.dataset.bearing = String(bearing);
+          readout.textContent = `${String(bearing).padStart(3, '0')}°`;
+          readout.parentElement?.style.setProperty('--bearing-offset', `${(bearing % 10) * 1.2}px`);
+        }
         renderer.render(scene, camera);
       }
       frameTime = time;
@@ -219,7 +227,17 @@ export function HelmetView({ terrain, point, heading, relief, sun, shadowed, onF
     <div className="helmet-scene" ref={container} />
     {failure && <div className="relief-status" role="alert"><span>{failure}</span><button className="button" onClick={onFallback}>Hide camera</button></div>}
     {!failure && !ready && <div className="relief-status" role="status">Loading helmet camera…</div>}
-    {!failure && ready && <span className="helmet-resolution">{grid.cellM} m elevation grid</span>}
+    {!failure && ready && <div className="helmet-hud">
+      <div className="helmet-compass" title="Camera bearing clockwise from north">
+        <span ref={bearingReadout} className="helmet-bearing" />
+        <span className="helmet-compass-ticks" aria-hidden="true" />
+      </div>
+      <span className="helmet-crosshair" aria-hidden="true" />
+      <div className="helmet-hud-bottom">
+        <span title="Terrain grade along the traverse">Grade {grade === undefined ? '—' : `${grade > 0 ? '+' : ''}${grade.toFixed(1)}°`}</span>
+        <span title="Elevation grid spacing">{grid.cellM} m DEM</span>
+      </div>
+    </div>}
   </>;
 }
 
@@ -604,6 +622,14 @@ export default function ReliefMap(props: Props) {
     if (!scene || !command.id) return;
     if (command.type === 'reset') {
       scene.reset();
+    } else if (command.type === 'locate') {
+      if (!frame || !grid || scope !== 'traverse') return;
+      const elevation = sampleElevation(grid, frame, command.point);
+      if (elevation === null) return;
+      const next = new THREE.Vector3(...worldPoint(frame, command.point, elevation));
+      scene.camera.position.add(next.clone().sub(scene.controls.target));
+      scene.controls.target.copy(next);
+      scene.controls.update();
     } else {
       const offset = scene.camera.position.clone().sub(scene.controls.target);
       const distance = offset.length() * (command.type === 'in' ? 0.78 : 1.28);
@@ -611,7 +637,7 @@ export default function ReliefMap(props: Props) {
       scene.camera.position.copy(scene.controls.target).add(offset);
       scene.controls.update();
     }
-  }, [command]);
+  }, [command, frame, grid, scope]);
 
   return <>
     <div ref={container} className={`terrain-relief${mode ? ' terrain-map--pick' : ''}`} />

@@ -5,7 +5,7 @@ import type { ShelterPin } from './shelters';
 import { createMapSymbol } from './mapSymbols';
 import type { MissionPin, SymbolKind } from './mapSymbols';
 import type { GridOverlay } from './terrainWorker';
-import { regionAsset } from './regionAssets';
+import { regionAsset, regionLabels } from './regionAssets';
 import { cellAt, cellCenter, displayPosition, localPoint } from './mission';
 import { cameraLocation, cameraStops, stations } from './galeRoutes';
 import galeOverview from './galeOverview.json';
@@ -13,6 +13,7 @@ import curiosityTrack from './curiosityTrack.json';
 
 export type LayerMode = 'optical' | 'slope' | 'thermal';
 export type MapScope = 'crater' | 'region' | 'traverse';
+export type MapCommand = { id: number; type: 'in' | 'out' | 'reset' } | { id: number; type: 'locate'; point: LocalPoint };
 export const routeColor = { out: '#62e7d2', back: '#d6e4f2' };
 export const routeOutline = '#101821';
 const roverColor = '#cf9dff';
@@ -73,7 +74,7 @@ export type MapProps = {
   onInspect: (point: LocalPoint) => void;
   onChangeScope: (scope: MapScope) => void;
   onCoordinate: (value: string) => void;
-  command: { id: number; type: 'in' | 'out' | 'reset' };
+  command: MapCommand;
 };
 
 const asset = (path: string) => `${import.meta.env.BASE_URL}gale/${path}`;
@@ -288,8 +289,9 @@ export function TerrainMap(props: MapProps) {
     group.clearLayers();
     if (scope === 'crater') {
       namedPlace(pointToLatLng(localPoint(terrain, galeOverview.mountSharp)), 'Mount Sharp', 'right').addTo(group);
-      scopeMarker(scopes.traverse.getCenter(), 'Curiosity landing region',
-        () => callbacks.current.onChangeScope('region')).addTo(group);
+      const boxwork = terrain.region === 'boxwork';
+      scopeMarker(scopes.traverse.getCenter(), boxwork ? regionLabels.boxwork : 'Curiosity landing region',
+        () => callbacks.current.onChangeScope(boxwork ? 'traverse' : 'region')).addTo(group);
       return;
     }
     L.rectangle(scopes.traverse, {
@@ -433,10 +435,16 @@ export function TerrainMap(props: MapProps) {
     if (!command.id || !map || !extent) return;
     if (command.type === 'reset') {
       fitScope(map, extent);
+    } else if (command.type === 'locate') {
+      if (callbacks.current.scope !== 'traverse') return;
+      const fittedZoom = map.getBoundsZoom(extent, false, L.point(28, 28));
+      map.setView(pointToLatLng(command.point), Math.max(map.getZoom(), fittedZoom + 1), { animate: false });
     } else {
       map.setZoom(map.getZoom() + (command.type === 'in' ? 0.5 : -0.5));
     }
   }, [command, terrain]);
 
-  return <div ref={element} className={`terrain-map${mode ? ' terrain-map--pick' : ''}`} aria-label="Interactive map of the Gale Crater study area" />;
+  return <div ref={element} className={`terrain-map${mode ? ' terrain-map--pick' : ''}`}
+    aria-label={scope === 'crater' ? 'Interactive map of Gale Crater' :
+      `Interactive map of ${regionLabels[terrain.region ?? 'gale']}`} />;
 }

@@ -2,11 +2,11 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import {
   Activity, ArrowDownLeft, ArrowLeftRight, ArrowRight, ArrowUpRight, BatteryCharging,
-  Camera, Check, ChevronDown, CircleAlert, Clock3, Compass, Database, Flag,
+  Camera, Check, ChevronDown, CircleAlert, Clock3, Compass, Crosshair, Database, Flag,
   FlaskConical, House, Layers3, Map, Maximize2, Minimize2, Minus, Mountain, Play, Plus, RotateCcw, Route, Target, Video, X,
 } from 'lucide-react';
 import { routeColor, TerrainMap } from './TerrainMap';
-import type { LayerMode, MapScope } from './TerrainMap';
+import type { LayerMode, MapCommand, MapScope } from './TerrainMap';
 import { verticalExaggeration } from './terrainRelief';
 import { ReturnReserve } from './ReturnReserve';
 import { EvaPanel, EvaReserve } from './EvaPanel';
@@ -231,7 +231,7 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
   const [lowestReserve, setLowestReserve] = useState<number | null>(null);
   const previousStatus = useRef<{ radio: string; below: boolean; outcome: string | null } | null>(null);
   const [spe, setSpe] = useState<{ target: SpeTarget; selected: number; wasPaused: boolean } | null>(null);
-  const [command, setCommand] = useState<{ id: number; type: 'in' | 'out' | 'reset' }>({ id: 0, type: 'reset' });
+  const [command, setCommand] = useState<MapCommand>({ id: 0, type: 'reset' });
   const missionName = eva?.plan.name;
   const customEva = Boolean(missionName);
   const builderOpen = section === '#create-mission' && !eva;
@@ -397,6 +397,13 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
     setCommand(({ id }) => ({ id: id + 1, type }));
   }
 
+  function locateAstronaut() {
+    if (!location) return;
+    if (mapScope !== 'traverse') changeMapScope('traverse');
+    const { point } = location;
+    setCommand(({ id }) => ({ id: id + 1, type: 'locate', point }));
+  }
+
   function loadDemo() {
     setEva(null);
     setSpe(null);
@@ -483,7 +490,7 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
   }
 
   function beginEva() {
-    if (!legs || eva || (!terrainWork.tree && !terrainWork.treeFailed)) return;
+    if (!legs || eva || loadingRegion || (!terrainWork.tree && !terrainWork.treeFailed)) return;
     clearTracking();
     setEva(startEva(terrain, legs, stopMinutes + delay, reserveSettings));
     changeMapScope('traverse');
@@ -491,7 +498,7 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
   }
 
   function beginMission() {
-    if (eva || !missionPreview.inbound || !draft.name.trim() || draft.stops.some(({ task }) => !task.trim()) ||
+    if (eva || loadingRegion || !missionPreview.inbound || !draft.name.trim() || draft.stops.some(({ task }) => !task.trim()) ||
       (!terrainWork.tree && !terrainWork.treeFailed)) return;
     setEva(startMissionEva(terrain, draft.name.trim(), missionPreview.stops, missionPreview.inbound, reserveSettings, delay));
     clearTracking();
@@ -534,11 +541,24 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
     setSpe(null);
   }
 
+  function addEvaDelay() {
+    if (!eva) return;
+    const delayed = delayEva(eva);
+    if (delayed === eva) return;
+    setEva(delayed);
+    setEvents((entries) => [...entries, {
+      minutes: eva.elapsed, label: `Delay added · ${(delayed.elapsed - eva.elapsed).toFixed(1)} min elapsed`,
+    }]);
+  }
+
   function goToBase() {
     if (!eva) return;
     const returning = returnEva(eva, returnPlanner, reviewingSPE);
     setEva(returning);
-    if (!returning.returnError) setSpe(null);
+    if (returning !== eva && !returning.returnError) {
+      setSpe(null);
+      setEvents((entries) => [...entries, { minutes: eva.elapsed, label: 'Return to base requested' }]);
+    }
     if (mapScope !== 'traverse') changeMapScope('traverse');
   }
 
@@ -633,7 +653,7 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
                   </div>
                   <div className="leg-switch" role="group" aria-label="Map coverage">
                     <button aria-pressed={mapScope === 'crater'} onClick={() => changeMapScope('crater')}>Full crater</button>
-                    <button aria-pressed={mapScope === 'region'} onClick={() => changeMapScope('region')}>Landing region</button>
+                    {!boxwork && <button aria-pressed={mapScope === 'region'} onClick={() => changeMapScope('region')}>Landing region</button>}
                     <button aria-pressed={mapScope === 'traverse'} onClick={() => changeMapScope('traverse')}>Traverse</button>
                   </div>
                   {!boxwork && mapScope !== 'crater' && <button className="button rover-toggle" aria-pressed={showRover}
@@ -664,7 +684,7 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
                   reviewingSPE={reviewingSPE} onSPE={startDrill}
                   onTogglePause={() => setEva((current) => current && { ...current, paused: !current.paused })}
                   onSpeed={(speed) => setEva((current) => current && { ...current, speed })}
-                  onDelay={() => setEva((current) => current && delayEva(current))}
+                  onDelay={addEvaDelay}
                   onReturn={goToBase}
                   onReset={() => {
                     setEva(null);
@@ -683,11 +703,9 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
                   <div className="helmet-stage">
                     <Suspense fallback={<div className="relief-status" role="status">Loading helmet camera…</div>}>
                       <HelmetView terrain={terrain} point={location.point} heading={heading} sun={sun} relief={helmetRelief}
-                        shadowed={environment?.light === 'In shadow'}
+                        shadowed={environment?.light === 'In shadow'} grade={grade?.longitudinal}
                         onFallback={() => setHelmetOpen(false)} />
                     </Suspense>
-                    <span className="helmet-crosshair" aria-hidden="true" />
-                    {grade && <span className="helmet-coordinate">{grade.longitudinal.toFixed(1)}° / {grade.cross.toFixed(1)}°</span>}
                   </div>
                 </section>}
                 {mapScope === 'traverse' && layersOpen && <div className="layer-deck" id="map-layers" aria-label="Map layer">
@@ -712,6 +730,7 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
                     <button aria-label="Zoom in" onClick={() => moveMap('in')}><Plus size={17} /></button>
                     <button aria-label="Zoom out" onClick={() => moveMap('out')}><Minus size={17} /></button>
                     <button aria-label="Reset map view" onClick={() => moveMap('reset')}><Target size={16} /></button>
+                    {eva && <button aria-label="Locate astronaut" title="Locate astronaut" onClick={locateAstronaut}><Crosshair size={17} /></button>}
                   </div>
                 </div>
                 {effectivePick && <div className="pick-banner" role="status">
@@ -720,7 +739,7 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
                 </div>}
                 <div className="layer-note">
                   {mapScope === 'crater' ? (
-                    <span><i className="key low" /> Curiosity landing region</span>
+                    <span><i className="key low" /> {boxwork ? 'Mount Sharp Boxwork' : 'Curiosity landing region'}</span>
                   ) : mapScope === 'region' ? (
                     <span><i className="key coverage-key" /> EVA study area · 1 km × 1 km</span>
                   ) : layer === 'slope' ? (
@@ -843,8 +862,12 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
               }}
               onDivert={() => {
                 if (!drillOption?.resourcesLast) return;
-                setEva(divertEva(eva, { label: String(spe.selected + 1), path: drillOption.path }));
+                const label = String(spe.selected + 1);
+                const diverted = divertEva(eva, { label, path: drillOption.path });
+                if (diverted === eva) return;
+                setEva(diverted);
                 setSpe(null);
+                setEvents((entries) => [...entries, { minutes: eva.elapsed, label: `Diverted to candidate ${label}` }]);
                 if (mapScope !== 'traverse') changeMapScope('traverse');
               }}
               onReturn={goToBase} onClose={closeDrill} />

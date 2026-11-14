@@ -636,20 +636,27 @@ main { max-width: 1680px; padding: 0 16px; }
 .dashboard--simulation .workspace-col { grid-area: 2 / 1; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); }
 .helmet-stage { position: relative; isolation: isolate; background: linear-gradient(#59485a 0%, #a07768 44%, #cb9778 78%, #a9745a); }
 .helmet-scene, .helmet-scene canvas { display: block; width: 100%; height: 100%; }
-.helmet-crosshair {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 20px;
-  height: 20px;
-  border: 1px solid #d9fff1a0;
-  border-radius: 50%;
-  transform: translate(-50%, -50%);
-  pointer-events: none;
+.helmet-hud {
+  position: absolute; inset: 0; pointer-events: none; color: #dafff0;
+  font: 600 10px/1.2 "IBM Plex Mono", Consolas, monospace;
+  font-variant-numeric: tabular-nums; text-shadow: 0 1px 2px #071713, 0 0 4px #071713;
 }
-.helmet-crosshair::before, .helmet-crosshair::after { content: ''; position: absolute; inset: 50% 4px auto; height: 1px; background: #d9fff1; }
+.helmet-compass { position: absolute; top: 7px; left: 50%; width: min(35%, 86px); transform: translateX(-50%); text-align: center; }
+.helmet-bearing { display: block; font-size: 1.15em; letter-spacing: .05em; }
+.helmet-compass-ticks {
+  position: relative; display: block; height: 6px; margin-top: 2px;
+  background: linear-gradient(to right, currentColor 1px, transparent 1px) calc(50% + 5.5px - var(--bearing-offset, 0px)) bottom / 12px 3px repeat-x;
+  filter: drop-shadow(0 1px 1px #071713);
+}
+.helmet-compass-ticks::after { content: ''; position: absolute; top: 0; bottom: 0; left: 50%; border-left: 1px solid; }
+.helmet-crosshair { position: absolute; top: 50%; left: 50%; width: 18px; height: 18px; transform: translate(-50%, -50%); opacity: .82; filter: drop-shadow(0 1px 1px #071713); }
+.helmet-crosshair::before, .helmet-crosshair::after {
+  content: ''; position: absolute; inset: calc(50% - .5px) 0 auto; height: 1px;
+  background: linear-gradient(to right, currentColor 33%, transparent 33% 67%, currentColor 67%);
+}
 .helmet-crosshair::after { transform: rotate(90deg); }
-.helmet-coordinate { position: absolute; bottom: 9px; left: 9px; padding: 5px 7px; color: #d8f6e9; background: #15222dd9; border: 1px solid #40636b; border-radius: 4px; font: 11px Consolas, monospace; }
+.helmet-hud-bottom { position: absolute; bottom: 6px; inset-inline: 7px; display: flex; justify-content: space-between; gap: 4px; text-transform: uppercase; }
+.helmet-hud-bottom > :last-child { color: #e1eee7; }
 .mission-editor-content { display: grid; gap: 9px; padding: 10px; min-width: 0; }
 .mission-field { display: grid; gap: 4px; min-width: 0; color: var(--muted); font-size: 11px; }
 .mission-field input, .mission-field select {
@@ -784,11 +791,9 @@ main { max-width: 1680px; padding: 0 16px; }
 .helmet-toolbar span, .helmet-toolbar button { display: inline-flex; align-items: center; gap: 4px; }
 .helmet-toolbar button { min-height: 24px; padding: 3px 5px; background: #142b3b; color: var(--text); border: 1px solid #426372; border-radius: 4px; cursor: pointer; font: inherit; }
 .helmet-toolbar button[aria-pressed=true] { color: var(--acid); }
-.helmet-resolution { position: absolute; top: 5px; left: 5px; padding: 3px 5px; background: #101d28dd; color: #deedf2; border-radius: 3px; font-size: 10px; }
-.map-stage--live .helmet-coordinate { left: 5px; bottom: 5px; padding: 3px 5px; }
-.map-stage--live .map-corner { right: calc(var(--camera-size) + 24px); top: auto; bottom: 68px; }
+.map-stage--live .map-corner { z-index: 2; right: calc(var(--camera-size) + 24px); top: auto; bottom: 68px; }
 .map-stage--live .relief-caption { display: none; }
-.map-stage--live .layer-note { max-width: calc(100% - var(--camera-size) - 25px); bottom: 66px; }
+.map-stage--live .layer-note { max-width: calc(100% - var(--camera-size) - 83px); bottom: 66px; }
 .map-stage--live .layer-deck { top: auto; bottom: 120px; z-index: 5; }
 .map-stage--live .layer-deck > .button { width: 100%; margin-top: 4px; }
 .map-stage--live .eva-panel { position: absolute; inset: 0; z-index: 3; display: block; padding: 0; pointer-events: none; background: transparent; }
@@ -842,7 +847,16 @@ main { max-width: 1680px; padding: 0 16px; }
   .eva-details .eva-phase { margin: 0; }
   .map-stage--live .eva-controls { right: 6px; left: 6px; bottom: 6px; gap: 4px; }
   .map-stage--live .eva-controls .button, .map-stage--live .eva-controls .leg-switch button { font-size: 10px; padding: 4px 5px; }
-  .helmet-toolbar, .helmet-resolution { font-size: 9px; }
-  .helmet-toolbar { padding: 2px 3px; }
+  .helmet-toolbar { font-size: 9px; }
+  .helmet-hud { font-size: 8px; }
+  .helmet-hud-bottom { inset-inline: 4px; }
+  .helmet-toolbar { padding: 2px 3px; flex-wrap: nowrap; white-space: nowrap; }
+  .helmet-toolbar button { padding-inline: 3px; }
+  .helmet-toolbar button svg { width: 11px; }
   .helmet-toolbar span svg { display: none; }
+}
+@media (max-width: 360px) {
+  .map-stage--live .helmet-panel, .map-stage--live .map-corner, .map-stage--live .layer-note { bottom: 132px; }
+  .map-stage--live .layer-deck { bottom: 174px; }
+  .helmet-toolbar button { padding-inline: 2px; }
 }

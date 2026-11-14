@@ -1,0 +1,21 @@
+{
+  "bounds": { "west": 136.05, "south": -7.02, "east": 139.48, "north": -3.62 },
+  "diameterKm": 154,
+  "image": "crater.webp",
+  "region": {
+    "bounds": { "west": 137.376, "south": -4.657, "east": 137.512, "north": -4.521 },
+    "image": "landing-region.webp"
+  },
+  "mountSharp": { "latitude": -5.08, "longitude": 137.85 },
+  "roverSource": "https://mars.nasa.gov/mmgis-maps/MSL/Layers/json/MSL_traverse.json",
+  "optical": {
+    "product": "Gale_CTX_BlockAdj_dd",
+    "mission": "Mars Reconnaissance Orbiter / Context Camera",
+    "catalog": "https://trek.nasa.gov/tiles/Mars/EQ/Gale_CTX_BlockAdj_dd/1.0.0/WMTSCapabilities.xml"
+  },
+  "relief": {
+    "product": "Mars_MOLA_blend200ppx_HRSC_Shade_clon0dd_200mpp_lzw",
+    "mission": "Mars Global Surveyor / MOLA and Mars Express / HRSC",
+    "catalog": "https://trek.nasa.gov/tiles/Mars/EQ/Mars_MOLA_blend200ppx_HRSC_Shade_clon0dd_200mpp_lzw/1.0.0/WMTSCapabilities.xml"
+  }
+}

@@ -860,3 +860,42 @@ main { max-width: 1680px; padding: 0 16px; }
   .map-stage--live .layer-deck { bottom: 174px; }
   .helmet-toolbar button { padding-inline: 2px; }
 }
+
+/* Wrist display */
+.wrist-display { --wrist-tone: var(--acid); --wrist-fill: #133a3e; --wrist-edge: #2d636c; padding: 8px; background: #0b121d; }
+.wrist-case { display: grid; gap: 7px; padding: 8px; border: 2px solid #3b4d63; border-radius: 22px; background: linear-gradient(160deg, #1a2638, #0e1622 60%); box-shadow: inset 0 1px 0 #ffffff14, 0 4px 14px #0007; }
+.wrist-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 6px; }
+.wrist-head h2 { display: flex; align-items: center; gap: 5px; margin: 0; color: #daeff8; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.wrist-head h2 svg { color: var(--acid); }
+.wrist-screen { display: grid; gap: 7px; padding: 9px; border: 1px solid #22344a; border-radius: 14px; background: #050a10; box-shadow: inset 0 0 18px #000c; font-family: "IBM Plex Mono", Consolas, monospace; }
+.wrist-clock { display: flex; align-items: baseline; justify-content: space-between; color: var(--muted); font-size: 10px; letter-spacing: .12em; }
+.wrist-clock strong { color: var(--text); font-size: 26px; font-weight: 600; letter-spacing: .02em; font-variant-numeric: tabular-nums; }
+.wrist-banner, .wrist-alert { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 6px; border: 1px solid var(--wrist-edge); background: var(--wrist-fill); color: var(--wrist-tone); }
+.wrist-banner { padding: 7px 8px; border-radius: 8px; font-size: 12px; line-height: 1.35; }
+.wrist-alert { padding: 4px 6px; border-radius: 6px; font-size: 11px; line-height: 1.3; }
+.wrist-banner b, .wrist-alert b { margin-right: 3px; text-transform: uppercase; letter-spacing: .06em; font-size: .85em; }
+.wrist-banner button, .wrist-alert button { display: inline-flex; align-items: center; gap: 3px; min-height: 24px; padding: 2px 6px; border: 1px solid currentColor; border-radius: 5px; background: transparent; color: inherit; font: 600 10px Inter, "Segoe UI", sans-serif; cursor: pointer; }
+.wrist-banner button:hover, .wrist-alert button:hover { background: #ffffff14; }
+.wrist-alerts { display: grid; gap: 4px; }
+.wrist-screen [data-level=critical] { --wrist-tone: var(--critical-text); --wrist-fill: #482c28; --wrist-edge: #c97a66; }
+.wrist-screen [data-level=caution] { --wrist-tone: #ffd081; --wrist-fill: #3d3229; --wrist-edge: #8e704a; }
+.wrist-screen [data-level=info] { --wrist-tone: #a9d6ff; --wrist-fill: #15304a; --wrist-edge: #3a6b94; }
+.wrist-screen [data-level=nominal] { --wrist-tone: #8ff2df; --wrist-fill: #10302f; --wrist-edge: #2d636c; }
+.wrist-banner[data-level=critical] { animation: wrist-critical 2s ease-in-out infinite; }
+@keyframes wrist-critical { 50% { box-shadow: 0 0 0 2px #c97a6666; border-color: #ffb39f; } }
+@media (prefers-reduced-motion: reduce) { .wrist-banner[data-level=critical] { animation: none; } }
+.wrist-gauges { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; }
+.wrist-gauges > div { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 3px; }
+.wrist-gauges dt { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 10px; letter-spacing: .08em; }
+.wrist-gauges dd { margin: 0; color: var(--text); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.wrist-gauges span { grid-column: 1 / -1; height: 4px; overflow: hidden; border-radius: 3px; background: #1d2a39; }
+.wrist-gauges i { display: block; height: 100%; background: var(--acid); }
+.wrist-gauges [data-low=true] dd { color: var(--critical-text); }
+.wrist-gauges [data-low=true] i { background: var(--critical-border); }
+.wrist-readouts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 0; overflow: hidden; border: 1px solid #1b2a3b; border-radius: 8px; background: #1b2a3b; }
+.wrist-readouts > div { min-width: 0; padding: 5px 7px; background: #070d15; }
+.wrist-readouts dt { display: flex; align-items: center; gap: 3px; color: var(--muted); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+.wrist-readouts dd { margin: 2px 0 0; overflow-wrap: anywhere; color: var(--text); font-size: 12px; font-variant-numeric: tabular-nums; }
+.wrist-readouts dd[data-low=true] { color: var(--critical-text); }
+.wrist-readouts .wrist-task { grid-column: 1 / -1; }
+.wrist-readouts small { color: var(--muted); }

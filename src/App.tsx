@@ -11,6 +11,8 @@ import { verticalExaggeration } from './terrainRelief';
 import { ReturnReserve } from './ReturnReserve';
 import { EvaPanel, EvaReserve } from './EvaPanel';
 import { SpePanel } from './SpePanel';
+import { useWristAlerts, WristDisplay } from './WristDisplay';
+import { wristAlerts } from './wristAlerts';
 import type { SpeTarget } from './SpePanel';
 import { SHELTER_COLOR } from './shelters';
 import type { ShelterOption } from './shelters';
@@ -273,6 +275,16 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
   const environment = eva && location && sun ? {
     radio, light: lightStatus(terrain, location.point, sun), dose: radDose(eva.elapsed, eventStart), ...grade,
   } : null;
+  const wrist = useWristAlerts(eva && telemetry && environment ? wristAlerts({
+    outcome: eva.outcome, resources: telemetry.current.resources, minimum: eva.plan.settings.minimum,
+    continueMargin: telemetry.continuePlan?.margin ?? null, returnMargin: telemetry.returnNow?.margin ?? null,
+    speActive: spe !== null || (eva.phase === 'shelter' && !eva.outcome), radio: environment.radio, light: environment.light,
+    grade: environment.longitudinal, cross: environment.cross, slopeLimit: mapSlopeLimit,
+    stopRemaining: eva.phase === 'stop' && !eva.outcome ? eva.stopRemaining : null,
+  }) : null, (fresh) => eva && setEvents((entries) => [...entries,
+    ...fresh.map(({ message }) => ({ minutes: eva.elapsed, label: `Wrist alert: ${message}` }))]));
+  const wristDisplay = eva && telemetry && environment && <WristDisplay session={eva} telemetry={telemetry} environment={environment}
+    alerts={wrist.visible} hidden={wrist.hidden} onAcknowledge={wrist.acknowledge} />;
   const drillOption = spe ? drillOptions[spe.selected] : undefined;
   const drillBase = spe && baseOption && eva ? {
     distanceM: baseOption.distanceM, arrival: estimateTimedReserve(baseOption.minutes, 0, eva.elapsed, eva.plan.settings),
@@ -849,6 +861,7 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
                 return <li key={i}><time>{Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, '0')}</time>{label}</li>;
               })}</ol>
             </details>
+            {wristDisplay}
           </aside>}
 
           {spe && eva && <aside className="workspace-col spe-response" aria-label="SPE response">
@@ -871,6 +884,7 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
                 if (mapScope !== 'traverse') changeMapScope('traverse');
               }}
               onReturn={goToBase} onClose={closeDrill} />
+            {wristDisplay}
           </aside>}
 
           {!spe && !eva && routeOpen && <aside className="workspace-col" aria-label="Mission planning">

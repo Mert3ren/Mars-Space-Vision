@@ -1,5 +1,6 @@
 import { cellCenter, estimateReserve, planMission, RESERVE_EPSILON, walkMinutes } from './mission.ts';
 import type { Cell, Leg, LocalPoint, ReserveSettings, Terrain } from './mission.ts';
+import type { MissionWork } from './missionDraft.ts';
 
 type Vertex = { point: LocalPoint; distanceM: number; cell?: Cell };
 type Endpoint = { vertex: Vertex; offsetM: number };
@@ -14,8 +15,9 @@ export type EvaSpeed = (typeof EVA_SPEEDS)[number];
 export const EVA_DELAY_MINUTES = 40;
 
 type SessionPlan = {
-  outbound: Path;
+  stops: { path: Path; task: string; minutes: number }[];
   inbound: Path;
+  name?: string;
   settings: ReserveSettings;
   depletionMinutes: number;
 };
@@ -29,6 +31,8 @@ export type EvaSession = {
   elapsed: number;
   distanceM: number;
   stopRemaining: number;
+  stopIndex: number;
+  completedStops: number;
   earlyReturn: Path | null;
   shelter: { label: string; path: Path } | null;
   returnError: boolean;
@@ -45,23 +49,44 @@ function pathFromLeg(terrain: Terrain, leg: Leg): Path {
 
 export function startEva(terrain: Terrain, route: { out: Leg; back: Leg }, stationaryMinutes: number,
   settings: ReserveSettings): EvaSession {
+  return createEva(terrain, [{ leg: route.out, task: 'Science stop', minutes: stationaryMinutes }], route.back, settings, 0);
+}
+
+export function startMissionEva(terrain: Terrain, name: string, stops: MissionWork[], inbound: Leg,
+  settings: ReserveSettings, delay: number): EvaSession {
+  return createEva(terrain, stops, inbound, settings, delay, name);
+}
+
+function createEva(terrain: Terrain, stops: MissionWork[], inbound: Leg, settings: ReserveSettings,
+  delay: number, name?: string): EvaSession {
   const { depletion } = estimateReserve(0, 0, 0, settings);
   return {
     plan: {
-      outbound: pathFromLeg(terrain, route.out),
-      inbound: pathFromLeg(terrain, route.back),
+      stops: stops.map(({ leg, task, minutes }) => ({ path: pathFromLeg(terrain, leg), task, minutes })),
+      inbound: pathFromLeg(terrain, inbound), name,
       settings: { ...settings },
       depletionMinutes: depletion.depletionMinutes,
     },
     phase: 'outbound', outcome: depletion.depletionMinutes <= 0 ? 'depleted' : null,
-    paused: false, speed: 120, elapsed: 0, distanceM: 0, stopRemaining: stationaryMinutes,
+    paused: false, speed: name ? 60 : 120, elapsed: 0, distanceM: 0,
+    stopRemaining: stops[0].minutes + delay, stopIndex: 0, completedStops: 0,
     earlyReturn: null, shelter: null, returnError: false,
   };
 }
 
 export function activeEvaPath(session: EvaSession): Path {
   if (session.phase === 'shelter' && session.shelter) return session.shelter.path;
-  return session.phase === 'inbound' ? session.earlyReturn ?? session.plan.inbound : session.plan.outbound;
+  return session.phase === 'inbound' ? session.earlyReturn ?? session.plan.inbound : session.plan.stops[session.stopIndex].path;
+}
+
+export function evaHeading(session: EvaSession): LocalPoint {
+  const { vertices } = activeEvaPath(session);
+  const point = evaLocation(session).point;
+  const ahead = vertices.find((vertex) => vertex.distanceM > session.distanceM + 0.25);
+  const behind = !ahead ? vertices[Math.max(0, vertices.length - 2)] : undefined;
+  const from = ahead || !behind ? point : behind.point;
+  const to = ahead?.point ?? point;
+  return { x: to.x - from.x, y: to.y - from.y };
 }
 
 export function evaLocation(session: EvaSession): Location {
@@ -107,13 +132,19 @@ export function advanceEva(session: EvaSession, minutes: number): EvaSession {
       next.distanceM = stageComplete ? path.distanceM : next.distanceM + spent / walkMinutes(1);
     }
 
+    if (stageComplete && next.phase === 'stop') next.completedStops = next.stopIndex + 1;
     if (stageComplete && next.phase === 'inbound') return { ...next, outcome: 'arrived' };
     if (stageComplete && next.phase === 'shelter') return { ...next, outcome: 'sheltered' };
     if (spent + RESERVE_EPSILON >= untilDepletion) return { ...next, outcome: 'depleted' };
     if (!stageComplete) return next;
-    next = next.phase === 'outbound'
-      ? { ...next, phase: 'stop' }
-      : { ...next, phase: 'inbound', distanceM: 0, returnError: false };
+    if (next.phase === 'outbound') {
+      next.phase = 'stop';
+    } else {
+      const following = next.plan.stops[next.stopIndex + 1];
+      next = following ? { ...next, phase: 'outbound', stopIndex: next.stopIndex + 1,
+        distanceM: 0, stopRemaining: following.minutes, returnError: false }
+        : { ...next, phase: 'inbound', distanceM: 0, returnError: false };
+    }
   }
 }
 
@@ -192,11 +223,14 @@ export function evaTelemetry(session: EvaSession, option: ReturnOption | null) {
   const { phase, plan, elapsed, outcome, stopRemaining } = session;
   const remainingLegM = Math.max(0, activeEvaPath(session).distanceM - session.distanceM);
   const followingPlan = phase === 'outbound' || phase === 'stop';
-  const remainingM = remainingLegM + (followingPlan ? plan.inbound.distanceM : 0);
+  const future = followingPlan ? plan.stops.slice(session.stopIndex + 1) : [];
+  const remainingM = remainingLegM + (followingPlan ? plan.inbound.distanceM : 0) +
+    future.reduce((sum, stop) => sum + stop.path.distanceM, 0);
+  const stationary = stopRemaining + future.reduce((sum, stop) => sum + stop.minutes, 0);
   const current = estimateReserve(0, 0, elapsed, plan.settings);
-  const remainingMinutes = walkMinutes(remainingM) + stopRemaining;
+  const remainingMinutes = walkMinutes(remainingM) + stationary;
   const continuePlan: Estimate | null = outcome || !followingPlan ? null
-    : estimateReserve(remainingM, stopRemaining, elapsed, plan.settings);
+    : estimateReserve(remainingM, stationary, elapsed, plan.settings);
   const returnNow: Estimate | null = outcome && outcome !== 'sheltered' ? null : phase === 'inbound'
     ? estimateReserve(remainingM, 0, elapsed, plan.settings)
     : option ? estimateReserve(option.distanceM, 0, elapsed, plan.settings) : null;

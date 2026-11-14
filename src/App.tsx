@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
   Activity, ArrowDownLeft, ArrowLeftRight, ArrowRight, ArrowUpRight, BatteryCharging,
   Camera, Check, ChevronDown, CircleAlert, Clock3, Compass, Database, Flag,
-  FlaskConical, House, Layers3, Map, Maximize2, Minimize2, Minus, Mountain, Play, Plus, RotateCcw, Route, Target, X,
+  FlaskConical, House, Layers3, Map, Maximize2, Minimize2, Minus, Mountain, Play, Plus, RotateCcw, Route, Target, Video, X,
 } from 'lucide-react';
 import { routeColor, TerrainMap } from './TerrainMap';
 import type { LayerMode, MapScope } from './TerrainMap';
@@ -12,7 +12,7 @@ import { EvaPanel, EvaReserve } from './EvaPanel';
 import { SpePanel } from './SpePanel';
 import type { SpeTarget } from './SpePanel';
 import { findShelterCandidates, SHELTER_COLOR, shelterOptions } from './shelters';
-import { activeEvaPath, advanceEva, createReturnPlanner, delayEva, divertEva, evaLocation, evaTelemetry, pathFromLocation, returnEva, startEva } from './eva';
+import { activeEvaPath, advanceEva, createReturnPlanner, delayEva, divertEva, evaHeading, evaLocation, evaTelemetry, pathFromLocation, returnEva, startEva, startMissionEva } from './eva';
 import type { EvaSession } from './eva';
 import galeOverview from './galeOverview.json';
 import {
@@ -22,11 +22,17 @@ import {
 import type { Cell, Leg, LocalPoint, RoutePriority, Terrain } from './mission';
 import { arrivalMinutes, cameraStops, compareRoutes, missionRoutes } from './galeRoutes';
 import type { RouteId } from './galeRoutes';
+import { MissionBuilder, MissionResult } from './MissionBuilder';
+import type { MissionPick } from './MissionBuilder';
+import { buildMission, readMissionDraft, saveMissionDraft } from './missionDraft';
+import type { MissionDraft } from './missionDraft';
+import type { MissionPin } from './mapSymbols';
 import 'leaflet/dist/leaflet.css';
 import './style.css';
 
 const asset = (name: string) => `${import.meta.env.BASE_URL}gale/${name}`;
 const ReliefMap = lazy(() => import('./ReliefMap'));
+const HelmetView = lazy(() => import('./ReliefMap').then(({ HelmetView }) => ({ default: HelmetView })));
 const sameCell = (a: Cell, b: Cell) => a.row === b.row && a.col === b.col;
 const kilometers = (meters: number) => (meters / 1000).toFixed(2);
 const meters = (value: number) => Math.round(value).toLocaleString('en-US');
@@ -180,6 +186,10 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
   const [reserveSettings, setReserveSettings] = useState(DEFAULT_RESERVE_SETTINGS);
   const [steps, setSteps] = useState([false, false, false]);
   const [eva, setEva] = useState<EvaSession | null>(null);
+  const [draft, setDraft] = useState(readMissionDraft);
+  const [missionPick, setMissionPick] = useState<MissionPick | null>(null);
+  const [mobileView, setMobileView] = useState<'helmet' | 'map'>('helmet');
+  const [helmetFallback, setHelmetFallback] = useState(false);
   const [spe, setSpe] = useState<{ target: SpeTarget; selected: number; wasPaused: boolean } | null>(null);
   const [command, setCommand] = useState<{ id: number; type: 'in' | 'out' | 'reset' }>({ id: 0, type: 'reset' });
   const { options: routes, error: routeError } = useMemo(() => missionRoutes(terrain, slopes, start, target, routing),
@@ -190,20 +200,31 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
   );
   const selected = routeComparison.find(({ route }) => route.id === selectedRoute) ?? recommended ?? routeComparison[0];
   const legs = selected?.route;
+  const missionName = eva?.plan.name;
+  const customEva = Boolean(missionName);
+  const builderOpen = section === '#create-mission' && !eva;
+  const showMissionMap = builderOpen || customEva;
+  const missionBase = draft.base ?? start;
+  const missionRouting = draft.routing ?? routing;
+  const mapSlopeLimit = showMissionMap ? missionRouting.slopeLimit : routing.slopeLimit;
+  const missionPreview = useMemo(() => buildMission(terrain, slopes, missionBase, draft, missionRouting, reserveSettings, delay),
+    [terrain, slopes, missionBase, draft, missionRouting, reserveSettings, delay]);
   const mapDirection = eva ? eva.phase === 'inbound' ? 'back' : 'out' : direction;
-  const activeLeg = legs?.[mapDirection];
-  const returnPlanner = useMemo(() => createReturnPlanner(terrain, slopes, start, routing.slopeLimit),
-    [terrain, slopes, start, routing.slopeLimit]);
+  const base = showMissionMap ? missionBase : start;
+  const activeLeg = showMissionMap ? undefined : legs?.[mapDirection];
+  const returnPlanner = useMemo(() => createReturnPlanner(terrain, slopes, base, mapSlopeLimit),
+    [terrain, slopes, base, mapSlopeLimit]);
   const location = eva ? evaLocation(eva) : null;
+  const heading = eva ? evaHeading(eva) : undefined;
   const baseOption = eva && location && (!eva.outcome || eva.outcome === 'sheltered') && (eva.phase !== 'inbound' || spe)
     ? returnPlanner(location) : null;
   const telemetry = eva ? evaTelemetry(eva, baseOption) : null;
   const continuingMargin = telemetry?.continuePlan?.margin ?? telemetry?.returnNow?.margin;
   const reviewingSPE = spe !== null;
-  const candidates = useMemo(() => reviewingSPE ? findShelterCandidates(terrain, slopes, routing.slopeLimit) : [],
-    [reviewingSPE, terrain, slopes, routing.slopeLimit]);
-  const drillOptions = useMemo(() => reviewingSPE && eva ? shelterOptions(terrain, slopes, routing.slopeLimit, candidates, eva) : [],
-    [reviewingSPE, terrain, slopes, routing.slopeLimit, candidates, eva]);
+  const candidates = useMemo(() => reviewingSPE ? findShelterCandidates(terrain, slopes, mapSlopeLimit) : [],
+    [reviewingSPE, terrain, slopes, mapSlopeLimit]);
+  const drillOptions = useMemo(() => reviewingSPE && eva ? shelterOptions(terrain, slopes, mapSlopeLimit, candidates, eva) : [],
+    [reviewingSPE, terrain, slopes, mapSlopeLimit, candidates, eva]);
   const drillOption = spe ? drillOptions[spe.selected] : undefined;
   const drillBase = spe && baseOption && eva ? {
     distanceM: baseOption.distanceM, arrival: estimateReserve(baseOption.distanceM, 0, eva.elapsed, eva.plan.settings),
@@ -229,9 +250,24 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
   const routeLabel = candidateLabel ? `To candidate ${candidateLabel}`
     : routeToBase ? 'Route to base'
     : eva?.earlyReturn ? 'Early return route'
+    : builderOpen ? 'Planned traverse'
+    : customEva && eva?.phase === 'outbound' ? `To stop ${eva.stopIndex + 1}`
     : mapDirection === 'out' ? 'Outbound route' : 'Return route';
   const visiblePath = previewPath ?? evaPath;
-  const evaPoints = useMemo(() => visiblePath?.vertices.map(({ point }) => point), [visiblePath]);
+  const evaPoints = useMemo(() => {
+    if (visiblePath) return visiblePath.vertices.map(({ point }) => point);
+    if (builderOpen) return missionPreview.stops.flatMap(({ leg }, i) =>
+      leg.path.slice(i === 0 ? 0 : 1).map((cell) => cellCenter(terrain, cell)));
+  }, [visiblePath, builderOpen, missionPreview, terrain]);
+  const missionReturnPoints = useMemo(() => builderOpen ? missionPreview.inbound?.path.map((cell) => cellCenter(terrain, cell)) : undefined,
+    [builderOpen, missionPreview, terrain]);
+  const missionPins = useMemo<MissionPin[] | undefined>(() => showMissionMap ? draft.stops.flatMap(({ cell, task }, index) => {
+    if (!cell) return [];
+    const active = eva && (eva.phase === 'outbound' || eva.phase === 'stop') && !eva.outcome && eva.stopIndex === index;
+    const completed = eva && index < eva.completedStops;
+    return [{ point: cellCenter(terrain, cell), id: String(index + 1), label: task.trim() || `Stop ${index + 1}`,
+      status: completed ? 'complete' : active || missionPick === index ? 'active' : 'pending' }];
+  }) : undefined, [draft.stops, showMissionMap, eva?.phase, eva?.outcome, eva?.stopIndex, eva?.completedStops, missionPick, terrain]);
   const evaPlaying = Boolean(eva && !eva.paused && !eva.outcome && !spe);
   const evaSpeed = eva?.speed;
   const distance = selected?.distanceM ?? 0;
@@ -241,7 +277,7 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
   const expandedMap = section === '#surface-map';
   const survivalOpen = section === '#reserve-panel';
   const scienceOpen = section === '#field-science';
-  const routeOpen = !expandedMap && !survivalOpen && !scienceOpen;
+  const routeOpen = !expandedMap && !survivalOpen && !scienceOpen && !builderOpen && !customEva;
   const phaseLabel = (phase: EvaSession['phase']) => eva?.phase === phase && !eva.outcome ? 'step' : undefined;
 
   useEffect(() => {
@@ -252,7 +288,18 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'instant' });
+    setPickMode(null);
+    setMissionPick(null);
+    setPickError('');
   }, [section]);
+
+  useEffect(() => { saveMissionDraft(draft); }, [draft]);
+  useEffect(() => {
+    if (!builderOpen) return;
+    setMapScope('traverse');
+    setDraft((current) => current.base && current.routing ? current :
+      { ...current, base: current.base ?? start, routing: current.routing ?? routing });
+  }, [builderOpen, start, routing]);
 
   useEffect(() => {
     if (!evaPlaying || !evaSpeed) return;
@@ -302,11 +349,27 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
     setShowRover(false);
     setShowStations(true);
     setSelectedRoute('direct');
+    window.location.hash = 'mission';
     setSteps([false, false, false]);
     moveMap('reset');
   }
 
   function selectCell(cell: Cell) {
+    if (builderOpen && missionPick !== null) {
+      const ground = inspectTerrain(terrain, slopes, cellCenter(terrain, cell));
+      if (!ground || ground.slope === null || ground.slope > mapSlopeLimit) {
+        setPickError(ground ? ERROR_TEXT.invalid_cell : ERROR_TEXT.outside_area);
+        return;
+      }
+      setDraft((current) => missionPick === 'base' ? { ...current, base: cell } :
+        { ...current, stops: current.stops.map((stop, index) => index === missionPick ? { ...stop, cell } : stop) });
+      setMissionPick(null);
+      setPickError('');
+      if (window.matchMedia('(max-width: 900px)').matches) {
+        document.getElementById('mission-editor-title')?.scrollIntoView({ block: 'start' });
+      }
+      return;
+    }
     if (!pickMode || eva) return;
     const trial = planMission(terrain, slopes, pickMode === 'start' ? cell : start,
       pickMode === 'target' ? cell : target, routing);
@@ -339,6 +402,7 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
   function changeMapScope(scope: MapScope) {
     setMapScope(scope);
     setPickMode(null);
+    setMissionPick(null);
     setPickError('');
     setInspection(null);
   }
@@ -356,10 +420,32 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
     moveMap('reset');
   }
 
+  function beginMission() {
+    if (eva || !missionPreview.inbound || !draft.name.trim() || draft.stops.some(({ task }) => !task.trim())) return;
+    setEva(startMissionEva(terrain, draft.name.trim(), missionPreview.stops, missionPreview.inbound, reserveSettings, delay));
+    setHelmetFallback(false);
+    setMobileView('helmet');
+    setMapDimension('2D');
+    changeMapScope('traverse');
+    moveMap('reset');
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  }
+
+  function pickMissionPoint(pick: MissionPick) {
+    setMapScope('traverse');
+    setMissionPick(missionPick === pick ? null : pick);
+    setPickError('');
+    setInspection(null);
+    if (missionPick !== pick && window.matchMedia('(max-width: 900px)').matches) {
+      document.getElementById('surface-map')?.scrollIntoView({ block: 'start' });
+    }
+  }
+
   function startDrill() {
     if (!eva || eva.outcome || spe) return;
     setSpe({ target: 5, selected: 0, wasPaused: eva.paused });
     setEva((current) => current && { ...current, paused: true });
+    if (customEva) setMobileView('map');
     if (mapScope !== 'traverse') changeMapScope('traverse');
   }
 
@@ -378,16 +464,17 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
   }
 
   useEffect(() => {
-    if (!pickMode) return;
+    if (!pickMode && missionPick === null) return;
     function cancel(event: KeyboardEvent) {
       if (event.key === 'Escape') {
         setPickMode(null);
+        setMissionPick(null);
         setPickError('');
       }
     }
     window.addEventListener('keydown', cancel);
     return () => window.removeEventListener('keydown', cancel);
-  }, [pickMode]);
+  }, [pickMode, missionPick]);
 
   const layerModes = [
     { type: 'optical', label: 'Optical', source: 'HiRISE / USGS', icon: Map },
@@ -397,10 +484,13 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
   const selectedLayer = layerModes.find(({ type }) => type === layer)!;
   const inspectedCell = inspection ? inspectTerrain(terrain, slopes, inspection) : null;
   const usingDemoEndpoints = sameCell(start, defaultStart) && isScience;
+  const effectivePick = builderOpen ? missionPick !== null : Boolean(pickMode);
+  const pickLabel = builderOpen ? missionPick === 'base' ? 'base camp' : `stop ${Number(missionPick) + 1}` :
+    pickMode === 'start' ? 'base camp' : 'science stop';
   const mapProps = {
-    terrain, slopes, start, target, activeLeg, activeColor, activeDashed, activeDirection: mapDirection,
-    evaPoint: location?.point, evaPoints, shelterPins,
-    layer, slopeLimit: routing.slopeLimit, scope: mapScope, opacity: opacity / 100, mode: pickMode, onPick: selectCell,
+    terrain, slopes, start: base, target, activeLeg, activeColor, activeDashed, activeDirection: mapDirection,
+    evaPoint: location?.point, evaPoints, shelterPins, missionPins, missionReturnPoints, heading,
+    layer, slopeLimit: mapSlopeLimit, scope: mapScope, opacity: opacity / 100, mode: effectivePick, onPick: selectCell,
     inspection, onInspect: setInspection, showRover, showStations, onChangeScope: changeMapScope,
     onCoordinate: setCoordinate, command, expanded: expandedMap,
   };
@@ -413,6 +503,7 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
         </div>
         <nav className="console-nav" aria-label="Mission control">
           <a href="#mission" aria-current={routeOpen ? 'location' : undefined}><Compass size={15} /> Mission</a>
+          <a href="#create-mission" aria-current={builderOpen || customEva ? 'location' : undefined}><Plus size={15} /> Create Mission</a>
           <a href="#surface-map" aria-current={expandedMap ? 'location' : undefined}><Map size={15} /> Map</a>
           <a href="#reserve-panel" aria-current={section === '#reserve-panel' ? 'location' : undefined}><BatteryCharging size={15} /> Survival</a>
           <a href="#field-science" aria-current={section === '#field-science' ? 'location' : undefined}><FlaskConical size={15} /> Science</a>
@@ -426,10 +517,10 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
         <section className="command-deck" id="mission" aria-label="Mission controls">
           {!eva && <div className="mission-header">
             <div className="mission-heading">
-              <h1><Target size={17} /> Gale Crater</h1>
-              <p>{usingDemoEndpoints ? 'Bradbury Landing → Yellowknife Bay' : 'Custom traverse'}</p>
+              <h1><Target size={17} /> {builderOpen && draft.name.trim() ? draft.name.trim() : 'Gale Crater'}</h1>
+              <p>{builderOpen ? 'Mission planning' : usingDemoEndpoints ? 'Bradbury Landing → Yellowknife Bay' : 'Custom traverse'}</p>
             </div>
-            {estimate && legs && <dl className="mission-readouts" aria-label="Selected route summary">
+            {!builderOpen && estimate && legs && <dl className="mission-readouts" aria-label="Selected route summary">
               <div><dt>Route</dt><dd style={{ color: legs.color }}>{legs.code}</dd></div>
               <div><dt>Distance</dt><dd>{kilometers(distance)} <small>km</small></dd></div>
               <div><dt>Mission time</dt><dd>{Math.round(estimate.missionMinutes)} <small>min</small></dd></div>
@@ -439,20 +530,51 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
             </dl>}
             <div className="mission-actions">
               <button className="button button--ghost" onClick={loadDemo}><RotateCcw size={14} /> Load Gale demo</button>
-              <button className="button button--primary" disabled={!legs} onClick={beginEva}><Play size={15} /> Start EVA</button>
+              {!builderOpen && <button className="button button--primary" disabled={!legs} onClick={beginEva}><Play size={15} /> Start EVA</button>}
             </div>
           </div>}
-          {eva && telemetry && legs && <EvaPanel session={eva} telemetry={telemetry} routeCode={legs.code}
+          {eva && telemetry && <EvaPanel session={eva} telemetry={telemetry} routeCode={legs?.code}
             reviewingSPE={reviewingSPE} onSPE={startDrill}
             onTogglePause={() => setEva((current) => current && { ...current, paused: !current.paused })}
             onSpeed={(speed) => setEva((current) => current && { ...current, speed })}
             onDelay={() => setEva((current) => current && delayEva(current))}
             onReturn={goToBase}
-            onReset={() => { setEva(null); setSpe(null); }} />}
+            onReset={() => {
+              setEva(null);
+              setSpe(null);
+              if (customEva) {
+                window.location.hash = 'create-mission';
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }
+            }} />}
         </section>
 
-        <div className={`dashboard${expandedMap ? ' dashboard--map' : survivalOpen || scienceOpen ? ' dashboard--tools' : ''}${spe ? ' dashboard--spe' : ''}`}>
+        {customEva && !helmetFallback && <div className="mission-view-switch leg-switch" role="group" aria-label="Mission view">
+          <button aria-pressed={mobileView === 'helmet'} onClick={() => setMobileView('helmet')}><Video size={15} /> Helmet Cam</button>
+          <button aria-pressed={mobileView === 'map'} onClick={() => setMobileView('map')}><Map size={15} /> Map</button>
+        </div>}
+        <div className={`dashboard${expandedMap ? ' dashboard--map' : survivalOpen || scienceOpen ? ' dashboard--tools' : ''}${spe ? ' dashboard--spe' : ''}${builderOpen ? ' dashboard--builder' : ''}${customEva ? ' dashboard--simulation' : ''}`}
+          data-mission-view={helmetFallback ? 'map' : mobileView}>
           <div className="primary-col">
+            {customEva && !helmetFallback && location && heading && <section className="panel helmet-panel" aria-labelledby="helmet-title">
+              <div className="panel-title"><div className="section-heading"><Video size={17} /><h2 id="helmet-title">Helmet Cam</h2></div>
+                <span className="simulation-chip">Simulated</span></div>
+              <div className="helmet-stage">
+                <Suspense fallback={<div className="relief-status" role="status">Loading helmet camera…</div>}>
+                  <HelmetView terrain={terrain} point={location.point} heading={heading} onFallback={() => {
+                    setHelmetFallback(true);
+                    setMobileView('map');
+                    setMapDimension('2D');
+                  }} />
+                </Suspense>
+                <span className="helmet-crosshair" aria-hidden="true" />
+                {eva?.phase === 'stop' && !eva.outcome && <div className="helmet-work">
+                  <span>WORKING AT STOP {eva.stopIndex + 1}</span>
+                  <strong>{eva.plan.stops[eva.stopIndex].task}</strong>
+                </div>}
+                <div className="helmet-coordinate">{displayPosition(terrain, location.point)}</div>
+              </div>
+            </section>}
             <section className="panel map-panel" id="surface-map" aria-labelledby="map-title">
               <div className="panel-title map-title">
                 <div className="section-heading"><Map size={17} /><h2 id="map-title">Surface map</h2></div>
@@ -468,22 +590,22 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
                   </div>
                   {mapScope !== 'crater' && <button className="button rover-toggle" aria-pressed={showRover}
                     onClick={() => setShowRover(!showRover)}><Route size={13} /> Curiosity</button>}
-                  {mapDimension === '2D' && mapScope !== 'crater' && <button className="button layer-toggle"
+                  {mapScope !== 'crater' && <button className="button layer-toggle"
                     aria-pressed={showStations} onClick={() => setShowStations(!showStations)}>
                     <Flag size={13} /> Map pins
                   </button>}
                   {mapScope === 'traverse' && <button className="button layer-toggle" aria-controls={layersOpen ? 'map-layers' : undefined}
                     aria-expanded={layersOpen} onClick={() => setLayersOpen(!layersOpen)}><Layers3 size={14} /> Layers <ChevronDown size={13} className={layersOpen ? 'turned' : ''} /></button>}
-                  <a className="icon-button map-expand" href={expandedMap ? '#mission' : '#surface-map'}
+                  {!showMissionMap && <a className="icon-button map-expand" href={expandedMap ? '#mission' : '#surface-map'}
                     aria-label={expandedMap ? 'Close expanded map' : 'Expand map'} title={expandedMap ? 'Close expanded map' : 'Expand map'}>
                     {expandedMap ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-                  </a>
+                  </a>}
                 </div>
               </div>
               <div className={`map-stage${mapDimension === '3D' ? ' map-stage--relief' : ''}`}>
                 {mapDimension === '3D' ? (
                   <Suspense fallback={<div className="relief-status" role="status">Loading 3D viewer…</div>}>
-                    <ReliefMap key={mapScope} {...mapProps} routes={routes} selectedRoute={legs?.id}
+                    <ReliefMap key={mapScope} {...mapProps} routes={showMissionMap ? [] : routes} selectedRoute={legs?.id}
                       stopTime={stopMinutes + delay} onSelectRoute={chooseRoute} onFallback={() => setMapDimension('2D')} />
                   </Suspense>
                 ) : <TerrainMap {...mapProps} />}
@@ -509,9 +631,9 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
                     <button aria-label="Reset map view" onClick={() => moveMap('reset')}><Target size={16} /></button>
                   </div>
                 </div>
-                {pickMode && <div className="pick-banner" role="status">
-                  <Target size={15} /> {pickError || `Click the map to place the ${pickMode === 'start' ? 'base camp' : 'science stop'}.`}
-                  <button aria-label="Cancel point selection" onClick={() => setPickMode(null)}><X size={16} /></button>
+                {effectivePick && <div className="pick-banner" role="status">
+                  <Target size={15} /> {pickError || `Click the map to place ${pickLabel}.`}
+                  <button aria-label="Cancel point selection" onClick={() => { setPickMode(null); setMissionPick(null); }}><X size={16} /></button>
                 </div>}
                 <div className="layer-note">
                   {mapScope === 'crater' ? (
@@ -519,16 +641,19 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
                   ) : mapScope === 'region' ? (
                     <span><i className="key coverage-key" /> EVA study area · 1 km × 1 km</span>
                   ) : layer === 'slope' ? (
-                    <><span><i className="key low" /> 0–8°</span>{routing.slopeLimit > 8 && <span><i className="key mid" /> &gt;8–{routing.slopeLimit}°</span>}
-                      <span><i className="key high" /> &gt;{routing.slopeLimit}°</span><span><i className="key unknown" /> No data</span></>
+                    <><span><i className="key low" /> 0–8°</span>{mapSlopeLimit > 8 && <span><i className="key mid" /> &gt;8–{mapSlopeLimit}°</span>}
+                      <span><i className="key high" /> &gt;{mapSlopeLimit}°</span><span><i className="key unknown" /> No data</span></>
                   ) : layer === 'thermal' ? (
                     <><i className="thermal-ramp" /><span>Relative IR brightness · local contrast</span></>
                   ) : null}
-                  {mapScope === 'traverse' && (activeLeg || evaPoints) && <span>
+                  {mapScope === 'traverse' && (activeLeg || (evaPoints && evaPoints.length > 1)) && <span>
                     <i className="key route-key" data-dashed={activeDashed} style={{ color: activeColor }} /> {routeLabel}
                   </span>}
+                  {mapScope === 'traverse' && missionReturnPoints && <span>
+                    <i className="key route-key" data-dashed="true" style={{ color: routeColor.back }} /> Planned return
+                  </span>}
                   {mapScope !== 'crater' && showRover && <span><i className="key rover-key" /> Curiosity · Sol 3–130</span>}
-                  {mapDimension === '2D' && mapScope !== 'crater' && showStations && <span>
+                  {mapScope !== 'crater' && showStations && <span>
                     <Flag size={12} /> Simulated stations <Camera size={12} /> Archived photos
                   </span>}
                 </div>
@@ -572,8 +697,8 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
               </div>
             </section>
 
-            {expandedMap && !spe && eva && telemetry && <EvaReserve session={eva} telemetry={telemetry} />}
-            {!expandedMap && !scienceOpen && <section className="panel profile-panel" aria-labelledby="profile-title">
+            {expandedMap && !customEva && !spe && eva && telemetry && <EvaReserve session={eva} telemetry={telemetry} />}
+            {!showMissionMap && !expandedMap && !scienceOpen && <section className="panel profile-panel" aria-labelledby="profile-title">
               <div className="panel-title">
                 <div className="section-heading"><Activity size={18} /><h2 id="profile-title">{eva ? 'Planned elevation profile' : 'Elevation profile'}</h2></div>
                 {!eva && <div className="leg-switch" aria-label="Route leg">
@@ -590,6 +715,25 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
               </div>}
             </section>}
           </div>
+
+          {builderOpen && <aside className="workspace-col" aria-label="Mission editor">
+            <MissionBuilder draft={draft} terrain={terrain} base={missionBase} preview={missionPreview} routing={missionRouting}
+              pick={missionPick} onDraft={(next) => {
+                setDraft(next);
+                if (next.stops.length !== draft.stops.length || next.stops.some((stop, index) => stop.cell !== draft.stops[index]?.cell)) {
+                  setMissionPick(null);
+                  setPickError('');
+                }
+              }} onRouting={(next) => setDraft((current) => ({ ...current, routing: next }))}
+              onPick={pickMissionPoint} onSimulate={beginMission} />
+          </aside>}
+
+          {missionName && eva && telemetry && !spe && <aside className="workspace-col" aria-label="Simulation details">
+            {(eva.outcome === 'arrived' || eva.outcome === 'depleted') && <MissionResult name={missionName}
+              tasks={eva.plan.stops.map(({ task }) => task)} completed={eva.completedStops}
+              minutes={eva.elapsed} resources={telemetry.current.resources} returned={eva.outcome === 'arrived'} />}
+            <EvaReserve session={eva} telemetry={telemetry} />
+          </aside>}
 
           {spe && eva && <aside className="workspace-col" aria-label="SPE response">
             <SpePanel cellM={terrain.cellM} target={spe.target} options={drillOptions} selected={spe.selected} base={drillBase}
@@ -692,14 +836,14 @@ function MissionControl({ terrain }: { terrain: Terrain }) {
             </section>
           </aside>}
 
-          {!spe && survivalOpen && <aside className="workspace-col" aria-label="Survival planning">
+          {!spe && !customEva && survivalOpen && <aside className="workspace-col" aria-label="Survival planning">
             {eva && telemetry ? <EvaReserve session={eva} telemetry={telemetry} /> :
               <ReturnReserve route={legs} estimate={estimate} stopMinutes={stopMinutes} delay={delay}
               settings={reserveSettings} onStopChange={setStopMinutes} onDelayChange={setDelay}
               onSettingsChange={setReserveSettings} />}
           </aside>}
 
-          {!spe && scienceOpen && <aside className="workspace-col" aria-label="Science workspace">
+          {!spe && !customEva && scienceOpen && <aside className="workspace-col" aria-label="Science workspace">
             <section className="panel science-panel" id="field-science" aria-labelledby="science-title">
               <div className="panel-title">
                 <div className="section-heading"><FlaskConical size={17} /><h2 id="science-title">Field science</h2></div>

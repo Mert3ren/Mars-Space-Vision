@@ -23,7 +23,7 @@ function marginLabel(value: number) {
 export function EvaPanel({ session, telemetry, routeCode, reviewingSPE, onSPE, onTogglePause, onSpeed, onDelay, onReturn, onReset }: {
   session: EvaSession;
   telemetry: Telemetry;
-  routeCode: string;
+  routeCode?: string;
   reviewingSPE: boolean;
   onSPE: () => void;
   onTogglePause: () => void;
@@ -33,13 +33,15 @@ export function EvaPanel({ session, telemetry, routeCode, reviewingSPE, onSPE, o
   onReset: () => void;
 }) {
   const { phase, paused, speed, outcome, elapsed, earlyReturn } = session;
+  const task = session.plan.name ? session.plan.stops[session.stopIndex].task : null;
   const headline = reviewingSPE ? 'SPE drill · Paused'
     : outcome === 'arrived' ? 'Returned to base'
     : outcome === 'depleted' ? `${telemetry.current.depletion.name} depleted`
     : outcome === 'sheltered' ? `Candidate ${session.shelter?.label} reached`
     : phase === 'shelter' ? `Walking to candidate ${session.shelter?.label}`
     : phase === 'inbound' ? earlyReturn ? 'Early return to base' : 'Returning to base'
-    : phase === 'stop' ? 'Science stop' : 'Walking to science stop';
+    : phase === 'stop' ? task ? `Working at stop ${session.stopIndex + 1}` : 'Science stop'
+    : task ? `Walking to stop ${session.stopIndex + 1}` : 'Walking to science stop';
   const reserve = telemetry.continuePlan ?? telemetry.returnNow ?? (outcome === 'arrived' ? telemetry.current : null);
   const belowReserve = Boolean(reserve && reserve.margin < -RESERVE_EPSILON);
   const belowReturn = Boolean(telemetry.returnNow && telemetry.returnNow.margin < -RESERVE_EPSILON);
@@ -48,7 +50,7 @@ export function EvaPanel({ session, telemetry, routeCode, reviewingSPE, onSPE, o
   return <section className="eva-panel" aria-label="EVA telemetry">
     <div className="eva-heading">
       <div className="section-heading"><Activity size={16} /><h3>EVA telemetry</h3></div>
-      <span className="simulation-chip">Route {routeCode} · Simulated</span>
+      <span className="simulation-chip">{session.plan.name ?? `Route ${routeCode ?? '—'}`} · Simulated</span>
       <strong className="eva-phase" role="status" data-state={outcome ?? (paused || reviewingSPE ? 'paused' : 'running')}>
         {headline}{!outcome && paused && !reviewingSPE && ' · Paused'}
       </strong>
@@ -58,6 +60,10 @@ export function EvaPanel({ session, telemetry, routeCode, reviewingSPE, onSPE, o
     </div>
     <dl className="eva-stats">
       <div><dt>Elapsed</dt><dd>{duration(elapsed)} <small>m:s</small></dd></div>
+      {task && followingPlan && !outcome && <div className="eva-task">
+        <dt>{phase === 'stop' ? 'Current task' : 'Next task'}</dt><dd>{task}</dd>
+      </div>}
+      {task && phase === 'stop' && !outcome && <div><dt>Work left</dt><dd>{duration(session.stopRemaining, true)} <small>m:s</small></dd></div>}
       <div><dt>Distance left</dt><dd>{outcome === 'depleted' ? '—' : `${Math.round(telemetry.remainingM)} m`}</dd></div>
       <div><dt>{phase === 'shelter' ? 'Candidate ETA' : 'Base ETA'}</dt><dd>{outcome === 'depleted' ? '—' : <>{duration(telemetry.remainingMinutes, true)} <small>m:s</small></>}</dd></div>
       {telemetry.current.resources.map((resource) => {
@@ -91,7 +97,7 @@ export function EvaPanel({ session, telemetry, routeCode, reviewingSPE, onSPE, o
       </>}
       {canReturn && !reviewingSPE &&
         <button className="button eva-return-button" data-urgent={belowReserve || belowReturn} onClick={onReturn}><ArrowDownLeft size={15} /> Return to Base</button>}
-      <button className="button button--ghost eva-reset" onClick={onReset}><RotateCcw size={14} /> Reset EVA</button>
+      <button className="button button--ghost eva-reset" onClick={onReset}><RotateCcw size={14} /> {session.plan.name ? 'Reset Mission' : 'Reset EVA'}</button>
     </div>
     {session.returnError && !outcome && <p className="eva-route-error" role="alert">No path to base under the selected slope limit. The current mission stays active.</p>}
   </section>;

@@ -2,16 +2,102 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { cellAt, cellCenter, DEFAULT_RESERVE_SETTINGS, estimateReserve, inspectTerrain, localPoint, planMission, slopeGrid, walkMinutes } from '../src/mission.ts';
-import { mapPoint, sampleElevation, terrainFrame, worldPoint } from '../src/terrainRelief.ts';
+import { helmetPose, mapPoint, sampleElevation, terrainFrame, worldPoint } from '../src/terrainRelief.ts';
 import { arrivalMinutes, cameraLocation, cameraStops, compareRoutes, missionRoutes, stations } from '../src/galeRoutes.ts';
-import { activeEvaPath, advanceEva, createReturnPlanner, delayEva, divertEva, evaLocation, evaTelemetry, returnEva, startEva } from '../src/eva.ts';
+import { activeEvaPath, advanceEva, createReturnPlanner, delayEva, divertEva, evaHeading, evaLocation, evaTelemetry, returnEva, startEva, startMissionEva } from '../src/eva.ts';
 import { findShelterCandidates, MIN_SKY_COVER, shelterOptions } from '../src/shelters.ts';
+import { buildMission } from '../src/missionDraft.ts';
 
 const gale = JSON.parse(readFileSync(new URL('../public/gale/terrain.json', import.meta.url), 'utf8'));
 const fixed = (row, col) => ({ row, col });
 const overview = JSON.parse(readFileSync(new URL('../src/galeOverview.json', import.meta.url), 'utf8'));
 const roverTrack = JSON.parse(readFileSync(new URL('../src/curiosityTrack.json', import.meta.url), 'utf8'));
 const overviewElevation = JSON.parse(readFileSync(new URL('../public/gale/elevation-overview.json', import.meta.url), 'utf8'));
+
+const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-8, `${actual} vs ${expected}`);
+
+test('three-stop missions use ordered legs, hold during work, and match the preview at base', () => {
+  const terrain = flatTerrain(12, 12);
+  const slopes = slopeGrid(terrain);
+  const base = fixed(4, 2);
+  const draft = { name: 'Field campaign', base, stops: [
+    { cell: fixed(4, 5), task: 'Inspect relay', minutes: 2 },
+    { cell: fixed(4, 8), task: 'Pass ridge', minutes: 0 },
+    { cell: fixed(7, 8), task: 'Sample soil', minutes: 3 },
+  ] };
+  const routing = { slopeLimit: 18, priority: 'shortest' };
+  const preview = buildMission(terrain, slopes, base, draft, routing, DEFAULT_RESERVE_SETTINGS, 4);
+  const reordered = buildMission(terrain, slopes, base, { ...draft, stops: [...draft.stops].reverse() },
+    routing, DEFAULT_RESERVE_SETTINGS, 4);
+  assert.equal(reordered.stops[0].task, 'Sample soil');
+  assert.deepEqual(reordered.stops[0].leg.path.at(-1), draft.stops[2].cell);
+  const start = startMissionEva(terrain, draft.name, preview.stops, preview.inbound, DEFAULT_RESERVE_SETTINGS, 4);
+  assert.equal(start.speed, 60);
+  const working = advanceEva(start, walkMinutes(preview.stops[0].leg.distanceM) + 1);
+  assert.equal(working.phase, 'stop');
+  close(working.stopRemaining, 5);
+  assert.deepEqual(evaLocation(working).point, cellCenter(terrain, draft.stops[0].cell));
+  close(evaTelemetry(working, null).continuePlan.missionMinutes, preview.reserve.missionMinutes);
+  const next = advanceEva(working, working.stopRemaining + walkMinutes(preview.stops[1].leg.distanceM) + 0.01);
+  assert.equal(next.stopIndex, 2);
+  assert.equal(next.completedStops, 2);
+  const done = advanceEva(next, 100);
+  assert.equal(done.outcome, 'arrived');
+  assert.equal(done.completedStops, 3);
+  assert.deepEqual(evaLocation(done).point, cellCenter(terrain, base));
+  close(done.elapsed, preview.reserve.missionMinutes);
+  const totals = evaTelemetry(done, null).current;
+  totals.resources.forEach((resource, i) => close(resource.remaining, preview.reserve.resources[i].remaining));
+});
+
+test('planned missions reject invalid legs and preserve completed work after early return or depletion', () => {
+  const terrain = flatTerrain(10, 10);
+  const slopes = slopeGrid(terrain);
+  const base = fixed(3, 2);
+  const settings = { slopeLimit: 18, priority: 'balanced' };
+  const draft = { name: 'Sample relay', base, stops: [
+    { cell: fixed(3, 5), task: 'Check relay', minutes: 0 },
+    { cell: fixed(6, 5), task: 'Inspect outcrop', minutes: 20 },
+  ] };
+  const blocked = buildMission(terrain, slopes, base, { ...draft, stops: [
+    draft.stops[0], { ...draft.stops[1], cell: fixed(0, 0) },
+  ] }, settings, DEFAULT_RESERVE_SETTINGS, 0);
+  assert.deepEqual(blocked.error, { index: 1, reason: 'invalid_cell' });
+  const preview = buildMission(terrain, slopes, base, draft, settings, DEFAULT_RESERVE_SETTINGS, 0);
+  const session = startMissionEva(terrain, draft.name, preview.stops, preview.inbound, DEFAULT_RESERVE_SETTINGS, 0);
+  const working = advanceEva(session, 3);
+  assert.equal(working.phase, 'stop');
+  assert.equal(working.completedStops, 1);
+  const returning = returnEva(working, createReturnPlanner(terrain, slopes, base, 18));
+  assert.deepEqual(evaLocation(returning).point, evaLocation(working).point);
+  const done = advanceEva(returning, 100);
+  assert.equal(done.outcome, 'arrived');
+  assert.equal(done.completedStops, 1);
+  const shortBattery = startMissionEva(terrain, draft.name, preview.stops, preview.inbound,
+    { ...DEFAULT_RESERVE_SETTINGS, battery: 2 }, 0);
+  const depleted = advanceEva(shortBattery, 100);
+  assert.equal(depleted.outcome, 'depleted');
+  assert.equal(depleted.completedStops, 1);
+  close(depleted.elapsed, 5);
+});
+
+test('helmet camera pose follows the EVA location at a true 1.7 m eye height', () => {
+  const terrain = flatTerrain();
+  const frame = terrainFrame(terrain, 'traverse', terrain, 1);
+  const route = planMission(terrain, slopeGrid(terrain), fixed(2, 2), fixed(2, 5));
+  const session = startEva(terrain, route, 3, DEFAULT_RESERVE_SETTINGS);
+  const walking = advanceEva(session, 0.4);
+  const point = evaLocation(walking).point;
+  const pose = helmetPose(terrain, frame, point, evaHeading(walking));
+  const ground = worldPoint(frame, point, sampleElevation(terrain, frame, point));
+  close(pose.position[0], ground[0]);
+  close(pose.position[1] - ground[1], 1.7 * frame.northScale);
+  close(pose.yaw, -Math.PI / 2);
+  const working = advanceEva(session, 1);
+  const waiting = advanceEva(working, 1);
+  assert.deepEqual(helmetPose(terrain, frame, evaLocation(working).point, evaHeading(working)),
+    helmetPose(terrain, frame, evaLocation(waiting).point, evaHeading(waiting)));
+});
 
 test('reserve budget recommends the longest whole-minute stop at or above the threshold', () => {
   const baseline = estimateReserve(934, 15, 40);

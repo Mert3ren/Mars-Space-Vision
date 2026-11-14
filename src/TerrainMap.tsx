@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react';
 import L from 'leaflet';
 import type { Cell, Leg, LocalPoint, Terrain } from './mission';
 import type { ShelterPin } from './shelters';
+import { createMapSymbol } from './mapSymbols';
+import type { MissionPin, SymbolKind } from './mapSymbols';
 import { cellAt, cellCenter, displayPosition, localPoint } from './mission';
 import { cameraLocation, cameraStops, stations } from './galeRoutes';
 import galeOverview from './galeOverview.json';
@@ -15,13 +17,11 @@ const roverColor = '#cf9dff';
 
 const pointToLatLng = ({ x, y }: LocalPoint): L.LatLngTuple => [y, x];
 
-function markerIcon(kind: 'base' | 'science') {
+function markerIcon(kind: SymbolKind, id?: string, state?: string) {
   return L.divIcon({
-    className: `map-pin map-pin--${kind}`,
-    iconSize: [32, 32],
-    html: kind === 'base'
-      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65"><path d="m4 11 8-7 8 7v8H4z"/><path d="M9 19v-5h6v5"/></svg>'
-      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65"><path d="M9 4h6M10 4v6l-5 8a1.3 1.3 0 0 0 1 2h12a1.3 1.3 0 0 0 1-2l-5-8V4M8 15h8"/></svg>',
+    className: `map-symbol-icon map-symbol-icon--${kind}`,
+    iconSize: [27, 27],
+    html: createMapSymbol(kind, id, state),
   });
 }
 
@@ -52,13 +52,16 @@ export type MapProps = {
   activeDirection: 'out' | 'back';
   evaPoint?: LocalPoint;
   evaPoints?: LocalPoint[];
+  heading?: LocalPoint;
   shelterPins: ShelterPin[];
+  missionPins?: MissionPin[];
+  missionReturnPoints?: LocalPoint[];
   layer: LayerMode;
   slopeLimit: number;
   scope: MapScope;
   expanded: boolean;
   opacity: number;
-  mode: 'start' | 'target' | null;
+  mode: boolean;
   inspection: LocalPoint | null;
   showRover: boolean;
   showStations: boolean;
@@ -105,16 +108,9 @@ function namedPlace(point: L.LatLngTuple, name: string, direction: 'left' | 'rig
 }
 
 function assetPin(kind: 'station' | 'camera', name: string, point: L.LatLngTuple) {
-  const drawing = kind === 'station'
-    ? '<path d="M12 12v7M8 20h8M12 8v.1M8 5a6 6 0 0 0 0 7m8-7a6 6 0 0 1 0 7M5 3a9 9 0 0 0 0 12m14-12a9 9 0 0 1 0 12"/>'
-    : '<path d="M4 7h4l2-2h4l2 2h4v13H4z"/><circle cx="12" cy="13" r="3"/>';
   return L.marker(point, {
     title: name, alt: name, bubblingMouseEvents: false,
-    icon: L.divIcon({
-      className: `asset-pin asset-pin--${kind}`,
-      iconSize: [27, 27],
-      html: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">${drawing}</svg>`,
-    }),
+    icon: markerIcon(kind),
   });
 }
 
@@ -133,7 +129,7 @@ function assetPopup(name: string, category: string, detail: string) {
 
 export function TerrainMap(props: MapProps) {
   const { terrain, slopes, start, target, activeLeg, activeColor, activeDashed, activeDirection, layer, slopeLimit, scope, expanded, opacity,
-    evaPoint, evaPoints, shelterPins, mode, inspection, showRover, showStations, command } = props;
+    evaPoint, evaPoints, shelterPins, missionPins, missionReturnPoints, heading, mode, inspection, showRover, showStations, command } = props;
   const callbacks = useRef(props);
   callbacks.current = props;
   const element = useRef<HTMLDivElement>(null);
@@ -192,7 +188,12 @@ export function TerrainMap(props: MapProps) {
     inspectorDrawing.current = L.layerGroup().addTo(map);
 
     fitScope(map, scopes[callbacks.current.scope]);
-    const observer = new ResizeObserver(() => map.invalidateSize());
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      if (!width || !height) return;
+      map.invalidateSize({ animate: false, pan: false });
+      fitScope(map, scopes[callbacks.current.scope]);
+    });
     observer.observe(element.current);
     map.on('click', (event: L.LeafletMouseEvent) => {
       const point = { x: event.latlng.lng, y: event.latlng.lat };
@@ -277,6 +278,10 @@ export function TerrainMap(props: MapProps) {
     const basePoint = pointToLatLng(cellCenter(terrain, start));
     const goalPoint = pointToLatLng(cellCenter(terrain, target));
     const points = evaPoints?.map(pointToLatLng) ?? activeLeg?.path.map((cell) => pointToLatLng(cellCenter(terrain, cell)));
+    if (missionReturnPoints && missionReturnPoints.length > 1) {
+      L.polyline(missionReturnPoints.map(pointToLatLng), { color: routeOutline, weight: 7, interactive: false }).addTo(group);
+      L.polyline(missionReturnPoints.map(pointToLatLng), { color: routeColor.back, weight: 3, dashArray: '7 6', interactive: false }).addTo(group);
+    }
     if (points && points.length > 1) {
       const color = activeColor ?? routeColor[activeDirection];
       L.polyline(points, { color: routeOutline, weight: 9, opacity: 0.98, interactive: false }).addTo(group);
@@ -296,20 +301,28 @@ export function TerrainMap(props: MapProps) {
     }
     L.marker(basePoint, { icon: markerIcon('base'), interactive: false, keyboard: false })
       .addTo(group).bindTooltip('Base camp', { permanent: true, direction: 'top', offset: [0, -16], className: 'base-label' });
-    L.marker(goalPoint, { icon: markerIcon('science'), interactive: false, keyboard: false })
+    if (!missionPins) L.marker(goalPoint, { icon: markerIcon('science'), interactive: false, keyboard: false })
       .addTo(group).bindTooltip('Science stop', { permanent: true, direction: 'top', offset: [0, -16], className: 'target-label' });
+    for (const { id, point, label, status } of missionPins ?? []) {
+      const marker = L.marker(pointToLatLng(point), {
+        interactive: !mode, keyboard: !mode, zIndexOffset: status === 'active' ? 810 : 740,
+        icon: markerIcon('stop', id, status),
+      }).addTo(group);
+      const name = `Stop ${id}${label === `Stop ${id}` ? '' : ` · ${label}`}${status === 'pending' ? '' : ` · ${status === 'complete' ? 'Completed' : 'Active'}`}`;
+      const tip = document.createElement('span');
+      tip.textContent = name;
+      marker.bindTooltip(tip, { permanent: status === 'active', direction: 'top', offset: [0, -15], className: 'target-label' });
+      marker.getElement()?.setAttribute('aria-label', name);
+    }
     for (const { id, point, selected } of shelterPins) {
-      const badge = document.createElement('span');
-      badge.textContent = id;
-      badge.dataset.selected = String(selected);
       const marker = L.marker(pointToLatLng(point), {
         interactive: false, keyboard: false, zIndexOffset: 800,
-        icon: L.divIcon({ className: 'shelter-pin', html: badge, iconSize: [23, 23] }),
+        icon: markerIcon('shelter', id, selected ? 'active' : 'pending'),
       }).addTo(group);
       marker.getElement()?.setAttribute('role', 'img');
       marker.getElement()?.setAttribute('aria-label', `Terrain cover candidate ${id}`);
     }
-  }, [terrain, start, target, activeLeg, activeColor, activeDashed, activeDirection, scope, evaPoints, shelterPins]);
+  }, [terrain, start, target, activeLeg, activeColor, activeDashed, activeDirection, scope, evaPoints, shelterPins, missionPins, missionReturnPoints, mode]);
 
   useEffect(() => {
     const map = instance.current;
@@ -321,17 +334,15 @@ export function TerrainMap(props: MapProps) {
     const position = pointToLatLng(evaPoint);
     if (evaMarker.current) {
       evaMarker.current.setLatLng(position);
-      return;
+    } else {
+      evaMarker.current = L.marker(position, {
+        interactive: false, keyboard: false, zIndexOffset: 1000, icon: markerIcon('astronaut'),
+      }).addTo(map);
+      evaMarker.current.getElement()?.setAttribute('aria-label', 'Astronaut');
     }
-    evaMarker.current = L.marker(position, {
-      interactive: false, keyboard: false, zIndexOffset: 1000,
-      icon: L.divIcon({
-        className: 'eva-map-pin', iconSize: [24, 24],
-        html: '<span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65"><rect x="5" y="3" width="14" height="17" rx="6"/><rect x="7.5" y="6" width="9" height="7" rx="2"/><path d="M9.5 16h5"/></svg></span>',
-      }),
-    }).addTo(map);
-    evaMarker.current.getElement()?.setAttribute('aria-label', 'Astronaut');
-  }, [terrain, evaPoint, scope]);
+    if (heading && (heading.x || heading.y)) evaMarker.current.getElement()?.style.setProperty('--heading',
+      `${Math.atan2(heading.x, heading.y)}rad`);
+  }, [terrain, evaPoint, scope, heading]);
 
   useEffect(() => {
     const group = roverDrawing.current;

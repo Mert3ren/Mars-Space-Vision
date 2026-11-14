@@ -12,7 +12,7 @@ export type ElevationGrid = {
 export type OverviewElevation = Record<'crater' | 'region', ElevationGrid>;
 export const verticalExaggeration = { crater: 2, region: 3, traverse: 4 };
 
-export function terrainFrame(terrain: Terrain, scope: MapScope, grid: ElevationGrid) {
+export function terrainFrame(terrain: Terrain, scope: MapScope, grid: ElevationGrid, exaggeration = verticalExaggeration[scope]) {
   const area = scope === 'crater' ? galeOverview :
     scope === 'region' ? galeOverview.region : null;
   const min = area ? localPoint(terrain, {
@@ -26,7 +26,6 @@ export function terrainFrame(terrain: Terrain, scope: MapScope, grid: ElevationG
   const heightM = max.y - min.y;
   const northScale = 100 / Math.max(widthM, heightM);
   const eastScale = northScale * Math.cos((center.y + terrain.bounds.south) / terrain.radiusM);
-  const exaggeration = verticalExaggeration[scope];
   const heights = grid.elevationM.filter((value): value is number => value !== null);
   if (heights.length === 0) throw new Error('No elevation data for this scale');
   const reference = (Math.min(...heights) + Math.max(...heights)) / 2;
@@ -49,12 +48,19 @@ export const sampleElevation = (grid: ElevationGrid, frame: TerrainFrame, point:
   const c = elevationM[(row + 1) * width + col];
   const d = elevationM[(row + 1) * width + col + 1];
   // Use the same diagonal and triangular interpolation as the rendered mesh.
-  if (dx + dy <= 1) {
-    if (a === null || b === null || c === null) return null;
-    return a * (1 - dx - dy) + b * dx + c * dy;
+  const triangle = dx + dy <= 1
+    ? [[a, 1 - dx - dy], [b, dx], [c, dy]] as const
+    : [[d, dx + dy - 1], [b, 1 - dy], [c, 1 - dx]] as const;
+  let elevation = 0;
+  let totalWeight = 0;
+  for (const [sample, weight] of triangle) {
+    if (weight <= 1e-8) continue;
+    if (sample === null) return null;
+    if (weight >= 1 - 1e-8) return sample;
+    elevation += sample * weight;
+    totalWeight += weight;
   }
-  if (b === null || c === null || d === null) return null;
-  return d * (dx + dy - 1) + b * (1 - dy) + c * (1 - dx);
+  return elevation / totalWeight;
 };
 
 export function worldPoint(frame: TerrainFrame, point: LocalPoint, elevationM: number): [number, number, number] {
@@ -67,4 +73,13 @@ export function worldPoint(frame: TerrainFrame, point: LocalPoint, elevationM: n
 
 export function mapPoint(frame: TerrainFrame, x: number, z: number): LocalPoint {
   return { x: frame.center.x + x / frame.eastScale, y: frame.center.y - z / frame.northScale };
+}
+
+export function helmetPose(grid: ElevationGrid, frame: TerrainFrame, point: LocalPoint, heading: LocalPoint) {
+  const elevation = sampleElevation(grid, frame, point);
+  if (elevation === null) return null;
+  const position = worldPoint(frame, point, elevation + 1.7);
+  const direction = { x: heading.x * frame.eastScale, z: -heading.y * frame.northScale };
+  const yaw = direction.x || direction.z ? Math.atan2(-direction.x, -direction.z) : null;
+  return { position, yaw };
 }

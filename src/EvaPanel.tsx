@@ -3,28 +3,41 @@ import { EVA_DELAY_MINUTES, EVA_SPEEDS } from './eva';
 import type { EvaSession, EvaSpeed, evaTelemetry } from './eva';
 import { RESERVE_EPSILON } from './mission';
 
-type Telemetry = ReturnType<typeof evaTelemetry>;
-type Environment = { radio: string; light: string; dose: number; longitudinal?: number; cross?: number };
+export type Telemetry = ReturnType<typeof evaTelemetry>;
+export type EvaEnvironment = { radio: string; light: string; dose: number; longitudinal?: number; cross?: number };
 
-function duration(minutes: number, roundUp = false) {
+export function duration(minutes: number, roundUp = false) {
   const seconds = (roundUp ? Math.ceil : Math.floor)(minutes * 60 + (roundUp ? -1e-6 : 1e-6));
   return `${Math.floor(seconds / 60)}:${String(Math.max(0, seconds % 60)).padStart(2, '0')}`;
 }
 
-function percent(value: number) {
+export function percent(value: number) {
   return `${Math.max(0, value).toFixed(1)}%`;
 }
 
-function marginLabel(value: number) {
+export function marginLabel(value: number) {
   const absolute = Math.abs(value);
   if (absolute < RESERVE_EPSILON) return '0 min';
   return `${value < 0 ? '−' : '+'}${absolute < 1 ? '<1' : Math.round(absolute)} min`;
 }
 
+export function evaPhaseLabel(session: EvaSession, telemetry: Telemetry, reviewingSPE: boolean) {
+  const { phase, outcome, earlyReturn, stopIndex } = session;
+  const custom = Boolean(session.plan.name);
+  if (reviewingSPE) return 'SPE drill · Paused';
+  if (outcome === 'arrived') return 'Returned to base';
+  if (outcome === 'depleted') return `${telemetry.current.depletion.name} depleted`;
+  if (outcome === 'sheltered') return `Candidate ${session.shelter?.label} reached`;
+  if (phase === 'shelter') return `Walking to candidate ${session.shelter?.label}`;
+  if (phase === 'inbound') return earlyReturn ? 'Early return to base' : 'Returning to base';
+  if (phase === 'stop') return custom ? `Working at stop ${stopIndex + 1}` : 'Science stop';
+  return custom ? `Walking to stop ${stopIndex + 1}` : 'Walking to science stop';
+}
+
 export function EvaPanel({ session, telemetry, environment, routeCode, reviewingSPE, onSPE, onTogglePause, onSpeed, onDelay, onReturn, onReset }: {
   session: EvaSession;
   telemetry: Telemetry;
-  environment: Environment;
+  environment: EvaEnvironment;
   routeCode?: string;
   reviewingSPE: boolean;
   onSPE: () => void;
@@ -34,16 +47,9 @@ export function EvaPanel({ session, telemetry, environment, routeCode, reviewing
   onReturn: () => void;
   onReset: () => void;
 }) {
-  const { phase, paused, speed, outcome, elapsed, earlyReturn } = session;
+  const { phase, paused, speed, outcome, elapsed } = session;
   const task = session.plan.name ? session.plan.stops[session.stopIndex].task : null;
-  const headline = reviewingSPE ? 'SPE drill · Paused'
-    : outcome === 'arrived' ? 'Returned to base'
-    : outcome === 'depleted' ? `${telemetry.current.depletion.name} depleted`
-    : outcome === 'sheltered' ? `Candidate ${session.shelter?.label} reached`
-    : phase === 'shelter' ? `Walking to candidate ${session.shelter?.label}`
-    : phase === 'inbound' ? earlyReturn ? 'Early return to base' : 'Returning to base'
-    : phase === 'stop' ? task ? `Working at stop ${session.stopIndex + 1}` : 'Science stop'
-    : task ? `Walking to stop ${session.stopIndex + 1}` : 'Walking to science stop';
+  const headline = evaPhaseLabel(session, telemetry, reviewingSPE);
   const reserve = telemetry.continuePlan ?? telemetry.returnNow ?? (outcome === 'arrived' ? telemetry.current : null);
   const belowReserve = Boolean(reserve && reserve.margin < -RESERVE_EPSILON);
   const belowReturn = Boolean(telemetry.returnNow && telemetry.returnNow.margin < -RESERVE_EPSILON);
@@ -79,7 +85,7 @@ export function EvaPanel({ session, telemetry, environment, routeCode, reviewing
       </div>}
       {task && phase === 'stop' && !outcome && <div><dt>Work left</dt><dd>{duration(session.stopRemaining, true)} <small>m:s</small></dd></div>}
       <div><dt>Distance left</dt><dd>{outcome === 'depleted' ? '—' : `${Math.round(telemetry.remainingM)} m`}</dd></div>
-      <div><dt>{phase === 'shelter' ? 'Candidate ETA' : 'Base ETA'}</dt><dd>{outcome === 'depleted' ? '—' : <>{duration(telemetry.remainingMinutes, true)} <small>m:s</small></>}</dd></div>
+      <div><dt>{phase === 'shelter' ? 'Candidate ETA' : followingPlan ? 'Planned base ETA' : 'Base ETA'}</dt><dd>{outcome === 'depleted' ? '—' : <>{duration(telemetry.remainingMinutes, true)} <small>m:s</small></>}</dd></div>
       <div><dt>Radio · 300 m</dt><dd data-low={environment.radio !== 'Connected'}>{environment.radio}</dd></div>
       <div><dt>Lighting</dt><dd>{environment.light}</dd></div>
       <div><dt>Grade / cross-slope</dt><dd>{environment.longitudinal === undefined ? '—' :

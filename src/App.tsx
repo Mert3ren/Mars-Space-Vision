@@ -10,11 +10,13 @@ import type { LayerMode, MapCommand, MapScope } from './TerrainMap';
 import { verticalExaggeration } from './terrainRelief';
 import { ReturnReserve } from './ReturnReserve';
 import { EvaPanel, EvaReserve } from './EvaPanel';
+import { HelmetDetails, HelmetVitals } from './HelmetTelemetry';
+import type { HelmetSurfaceData } from './helmetSurface';
 import { SpePanel } from './SpePanel';
 import type { SpeTarget } from './SpePanel';
 import { SHELTER_COLOR } from './shelters';
 import type { ShelterOption } from './shelters';
-import { activeEvaPath, advanceEva, createReturnPlanner, delayEva, divertEva, evaHeading, evaLocation, evaTelemetry, pathFromLocation, returnEva, startEva, startMissionEva } from './eva';
+import { activeEvaPath, advanceEva, createReturnPlanner, delayEva, divertEva, evaGuidePoint, evaHeading, evaLocation, evaTelemetry, pathFromLocation, returnEva, startEva, startMissionEva } from './eva';
 import type { EvaSession } from './eva';
 import galeOverview from './galeOverview.json';
 import {
@@ -223,6 +225,8 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
   const [eva, setEva] = useState<EvaSession | null>(null);
   const [missionPick, setMissionPick] = useState<MissionPick | null>(null);
   const [helmetOpen, setHelmetOpen] = useState(true);
+  const [helmetDetails, setHelmetDetails] = useState(false);
+  const [helmetSurfaceData, setHelmetSurfaceData] = useState<HelmetSurfaceData | null>(null);
   const [helmetRelief, setHelmetRelief] = useState(false);
   const [showRange, setShowRange] = useState(false);
   const [showShadow, setShowShadow] = useState(false);
@@ -510,6 +514,7 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
 
   function clearTracking() {
     setHelmetOpen(true);
+    setHelmetDetails(false);
     setEventStart(null);
     setEvents([]);
     setLowestReserve(null);
@@ -577,7 +582,7 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
 
   const layerModes = ([
     { type: 'optical', label: 'Optical', source: 'HiRISE / USGS', icon: Map },
-    { type: 'slope', label: 'Terrain slope', source: 'Gale DEM · 10 m grid', icon: Mountain },
+    { type: 'slope', label: 'Terrain slope', source: `Gale DEM · ${terrain.cellM} m grid`, icon: Mountain },
     { type: 'thermal', label: 'Thermal infrared', source: 'NASA Mars Trek · THEMIS', icon: Activity },
   ] as const).filter(({ type }) => type !== 'thermal' || !boxwork);
   const selectedLayer = layerModes.find(({ type }) => type === layer)!;
@@ -594,6 +599,7 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
     inspection, onInspect: setInspection, showRover, showStations, onChangeScope: changeMapScope,
     onCoordinate: setCoordinate, command, expanded: expandedMap,
   };
+  const helmetTelemetry = eva && telemetry && environment ? { session: eva, telemetry, environment, reviewingSPE } : null;
 
   return (
     <div className="app-shell">
@@ -679,7 +685,8 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
                     <ReliefMap key={mapScope} {...mapProps} routes={showMissionMap ? [] : routes} selectedRoute={legs?.id}
                       stopTime={stopMinutes + delay} onSelectRoute={chooseRoute} onFallback={() => setMapDimension('2D')} />
                   </Suspense>
-                ) : <TerrainMap {...mapProps} />}
+                ) : <TerrainMap {...mapProps} routes={eva || showMissionMap ? noRoutes.options : routes}
+                  selectedRoute={legs?.id} onSelectRoute={chooseRoute} />}
                 {eva && telemetry && environment && <EvaPanel session={eva} telemetry={telemetry} environment={environment} routeCode={legs?.code}
                   reviewingSPE={reviewingSPE} onSPE={startDrill}
                   onTogglePause={() => setEva((current) => current && { ...current, paused: !current.paused })}
@@ -694,19 +701,28 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
                       window.scrollTo({ top: 0, behavior: 'instant' });
                     }
                   }} />}
-                {eva && helmetOpen && location && heading && sun && <section className="helmet-panel" aria-label="Helmet camera">
+                {eva && helmetTelemetry && helmetOpen && location && heading && sun && <section className="helmet-panel" aria-label="Helmet camera">
                   <div className="helmet-toolbar">
-                    <span><Video size={13} /> Helmet Cam</span>
-                    <button type="button" aria-pressed={helmetRelief} onClick={() => setHelmetRelief(!helmetRelief)}>Relief</button>
-                    <button type="button" aria-label="Minimize helmet camera" onClick={() => setHelmetOpen(false)}><Minus size={14} /></button>
+                    <span><Video size={13} /> Helmet Cam <small>SIM</small></span>
+                    <div className="helmet-toolbar-actions">
+                      <button type="button" aria-pressed={helmetRelief} onClick={() => setHelmetRelief(!helmetRelief)}>Relief</button>
+                      <button type="button" aria-label="HUD details" aria-expanded={helmetDetails}
+                        aria-controls={helmetDetails ? 'helmet-details' : undefined} onClick={() => setHelmetDetails(!helmetDetails)}>HUD <ChevronDown size={12} /></button>
+                      <button type="button" aria-label="Minimize helmet camera" onClick={() => { setHelmetSurfaceData(null); setHelmetOpen(false); }}><Minus size={14} /></button>
+                    </div>
                   </div>
                   <div className="helmet-stage">
                     <Suspense fallback={<div className="relief-status" role="status">Loading helmet camera…</div>}>
                       <HelmetView terrain={terrain} point={location.point} heading={heading} sun={sun} relief={helmetRelief}
-                        shadowed={environment?.light === 'In shadow'} grade={grade?.longitudinal}
+                        shadowed={helmetTelemetry.environment.light === 'In shadow'}
+                        walking={evaPlaying && eva.speed === 1 && eva.phase !== 'stop'} distanceM={eva.distanceM}
+                        guide={reviewingSPE ? undefined : evaGuidePoint(eva)}
+                        onSurfaceData={setHelmetSurfaceData}
                         onFallback={() => setHelmetOpen(false)} />
                     </Suspense>
+                    <HelmetVitals {...helmetTelemetry} />
                   </div>
+                  {helmetDetails && <HelmetDetails {...helmetTelemetry} surfaceData={helmetSurfaceData} />}
                 </section>}
                 {mapScope === 'traverse' && layersOpen && <div className="layer-deck" id="map-layers" aria-label="Map layer">
                   {layerModes.map(({ type, label, source, icon: Icon }) =>
@@ -755,6 +771,8 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
                     <i className="key route-key" data-dashed="true" style={{ color: routeColor.back }} /> Planned return
                   </span>}
                   {mapScope === 'traverse' && terrainWork.range && <span><i className="key low" /> Return range</span>}
+                  {mapDimension === '2D' && mapScope === 'traverse' && !eva && !showMissionMap && routes.length > 1 &&
+                    <span><i className="key route-key" data-dashed="true" style={{ color: '#a4bbd0' }} /> Alternate routes</span>}
                   {mapScope === 'traverse' && terrainWork.shadow && <>
                     <span><i className="key shadow-key" /> Shadow</span><span><i className="key no-shadow-data" /> Missing data</span>
                   </>}
@@ -798,7 +816,7 @@ function MissionControl({ terrain, draft, setDraft, onRegion, loadingRegion, reg
                 <span><Layers3 size={14} /> {mapScope === 'crater'
                   ? `Mars Trek · CTX / MOLA–HRSC · Gale ≈ ${galeOverview.diameterKm} km across`
                   : mapScope === 'region' ? 'Mars Trek · MRO CTX · 8 km × 8 km'
-                  : `${layer === 'thermal' ? 'Mars Trek · THEMIS day IR · ~100 m/px' : selectedLayer.source} · 1 km × 1 km`}</span>
+                  : `${layer === 'thermal' ? 'Mars Trek · THEMIS day IR · ~100 m/px' : selectedLayer.source} · 1 km × 1 km EVA area${mapDimension === '2D' ? ' · Mars Trek context' : ''}`}</span>
                 <span className="coordinates">{mapDimension === '3D' && mapScope !== 'traverse' ? 'Elevation: USGS MOLA / HRSC' : coordinate}</span>
               </div>
             </section>

@@ -82,6 +82,13 @@ export function activeEvaPath(session: EvaSession): Path {
   return session.phase === 'inbound' ? session.earlyReturn ?? session.plan.inbound : session.plan.stops[session.stopIndex].path;
 }
 
+export function evaGuidePoint(session: EvaSession): LocalPoint | undefined {
+  if (session.outcome || session.phase === 'stop') return;
+  const { distanceM } = activeEvaPath(session);
+  if (distanceM - session.distanceM < 1) return;
+  return evaLocation({ ...session, distanceM: Math.min(distanceM, session.distanceM + 18) }).point;
+}
+
 export function evaHeading(session: EvaSession): LocalPoint {
   const { vertices } = activeEvaPath(session);
   const point = evaLocation(session).point;

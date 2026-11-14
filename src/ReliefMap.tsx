@@ -10,6 +10,8 @@ import { cellAt, cellCenter, displayPosition, localPoint } from './mission';
 import type { LocalPoint, Terrain } from './mission';
 import { helmetPose, mapPoint, sampleElevation, terrainFrame, worldPoint } from './terrainRelief';
 import type { ElevationGrid, OverviewElevation, TerrainFrame } from './terrainRelief';
+import { helmetFrameInterval, helmetOpticalMaterial, helmetSky, helmetStep, helmetSurfaceDetail } from './helmetSurface';
+import type { HelmetSurfaceData } from './helmetSurface';
 import galeOverview from './galeOverview.json';
 import curiosityTrack from './curiosityTrack.json';
 import { arrivalMinutes, cameraLocation, cameraStops, stations } from './galeRoutes';
@@ -62,6 +64,50 @@ function buildMesh(grid: ElevationGrid, frame: TerrainFrame) {
   return geometry;
 }
 
+function buildHelmetTerrain(grid: ElevationGrid, frame: TerrainFrame, material: THREE.Material) {
+  // Shared vertices keep normals and texture coordinates continuous across culled tiles.
+  const source = buildMesh(grid, frame);
+  const terrain = new THREE.Group();
+  const columns = grid.width + 2;
+  const tileCells = 48;
+  const tileColumns = Math.ceil((columns - 1) / tileCells);
+  const position = source.getAttribute('position') as THREE.BufferAttribute;
+  const normals = source.getAttribute('normal');
+  const uv = source.getAttribute('uv');
+  const faces = source.index!.array;
+  const tiles = new Map<number, { indices: number[]; bounds: THREE.Box3 }>();
+  const point = new THREE.Vector3();
+  for (let face = 0; face < faces.length; face += 3) {
+    const a = faces[face];
+    const b = faces[face + 1];
+    const c = faces[face + 2];
+    const row = Math.min(Math.floor(a / columns), Math.floor(b / columns), Math.floor(c / columns));
+    const col = Math.min(a % columns, b % columns, c % columns);
+    const key = Math.floor(row / tileCells) * tileColumns + Math.floor(col / tileCells);
+    let tile = tiles.get(key);
+    if (!tile) {
+      tile = { indices: [], bounds: new THREE.Box3() };
+      tiles.set(key, tile);
+    }
+    tile.indices.push(a, b, c);
+    tile.bounds.expandByPoint(point.fromBufferAttribute(position, a));
+    tile.bounds.expandByPoint(point.fromBufferAttribute(position, b));
+    tile.bounds.expandByPoint(point.fromBufferAttribute(position, c));
+  }
+  for (const { indices, bounds } of tiles.values()) {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', position);
+    geometry.setAttribute('uv', uv);
+    geometry.setAttribute('normal', normals);
+    geometry.setIndex(indices);
+    geometry.boundingBox = bounds;
+    geometry.boundingSphere = bounds.getBoundingSphere(new THREE.Sphere());
+    terrain.add(new THREE.Mesh(geometry, material));
+  }
+  source.dispose();
+  return terrain;
+}
+
 function disposeDrawings(group: THREE.Group) {
   for (const item of [...group.children]) {
     if (item instanceof THREE.Mesh || item instanceof Line2) {
@@ -100,14 +146,18 @@ function loadHelmetGrid(region: NonNullable<Terrain['region']>) {
   return load;
 }
 
-export function HelmetView({ terrain, point, heading, relief, sun, shadowed, grade, onFallback }: {
+export function HelmetView({ terrain, point, heading, relief, sun, shadowed, walking, distanceM, guide, onSurfaceData, onFallback }: {
   terrain: Terrain; point: LocalPoint; heading: LocalPoint; relief: boolean;
-  sun: { east: number; north: number; up: number }; shadowed: boolean; grade?: number; onFallback: () => void;
+  sun: { east: number; north: number; up: number }; shadowed: boolean;
+  walking: boolean; distanceM: number; guide?: LocalPoint;
+  onSurfaceData: (data: HelmetSurfaceData) => void; onFallback: () => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const bearingReadout = useRef<HTMLSpanElement>(null);
-  const live = useRef({ point, heading, sun, relief, shadowed });
-  live.current = { point, heading, sun, relief, shadowed };
+  const guideMarker = useRef<HTMLSpanElement>(null);
+  const redraw = useRef<(() => void) | null>(null);
+  const live = useRef({ point, heading, sun, relief, shadowed, walking, distanceM, guide });
+  live.current = { point, heading, sun, relief, shadowed, walking, distanceM, guide };
   const [detail, setDetail] = useState<HelmetGrid>();
   const region = terrain.region ?? 'gale';
   useEffect(() => {
@@ -120,6 +170,10 @@ export function HelmetView({ terrain, point, heading, relief, sun, shadowed, gra
   const [failure, setFailure] = useState('');
   const [ready, setReady] = useState(false);
   useEffect(() => {
+    redraw.current?.();
+  }, [point.x, point.y, heading.x, heading.y, sun.east, sun.north, sun.up, relief, shadowed, walking, distanceM, guide?.x, guide?.y, ready]);
+
+  useEffect(() => {
     const element = container.current;
     if (!element) return;
     setFailure('');
@@ -131,98 +185,201 @@ export function HelmetView({ terrain, point, heading, relief, sun, shadowed, gra
       setFailure('Helmet camera requires WebGL 2.');
       return;
     }
-    renderer.setPixelRatio(Math.max(1.5, Math.min(2.5, window.devicePixelRatio)));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.19;
     renderer.domElement.setAttribute('role', 'img');
     renderer.domElement.setAttribute('aria-label', `Simulated first-person view of ${regionLabels[region]}`);
     element.appendChild(renderer.domElement);
     const scene = new THREE.Scene();
-    scene.fog = new THREE.Fog('#bb856a', 8, 29);
-    const camera = new THREE.PerspectiveCamera(68, 1, 0.025, 80);
+    const fog = new THREE.Fog('#ae7c61', 100 * frame.northScale, 440 * frame.northScale);
+    scene.fog = fog;
+    const camera = new THREE.PerspectiveCamera(64, 1, 0.15 * frame.northScale, 850 * frame.northScale);
     camera.rotation.order = 'YXZ';
-    camera.rotation.x = -0.14;
-    scene.add(new THREE.HemisphereLight('#f5ebde', '#90664e', 1.1));
+    camera.rotation.x = -0.17;
+    const sky = helmetSky(camera.far);
+    scene.add(sky);
+    const ambient = new THREE.HemisphereLight('#f3e5d9', '#947057', 0.95);
+    scene.add(ambient);
     const sunlight = new THREE.DirectionalLight('#ffe9cb', 1.7);
     scene.add(sunlight);
-    const reliefMaterial = new THREE.MeshLambertMaterial({ color: '#ba9376' });
-    const opticalMaterial = new THREE.MeshLambertMaterial({ color: '#b78569' });
-    const mesh = new THREE.Mesh(buildMesh(grid, frame), opticalMaterial);
-    scene.add(mesh);
+    const reliefMaterial = new THREE.MeshLambertMaterial({ color: '#ba9376', dithering: true });
+    const anisotropy = renderer.capabilities.getMaxAnisotropy();
+    const surfaceDetail = helmetSurfaceDetail(anisotropy);
+    const opticalMaterial = helmetOpticalMaterial(surfaceDetail, 1 / frame.northScale);
+    const terrainTiles = buildHelmetTerrain(grid, frame, opticalMaterial);
+    scene.add(terrainTiles);
     let disposed = false;
+    let contextLost = false;
+    let texture: THREE.Texture | undefined;
+    let frameRequest: number | null = null;
+    let lastFrameTime: number | undefined;
+    let nextFrameAt = 0;
+    let positioned = false;
+    let terrainMaterial: THREE.Material = opticalMaterial;
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const dustDay = new THREE.Color('#ae7c61');
+    const dustNight = new THREE.Color('#27202b');
     const loader = new THREE.TextureLoader();
-    let texture = loader.load(regionAsset(region, detail ? 'helmet-optical.webp' : 'optical.webp'), loaded, undefined, () => {
-      if (disposed) return;
-      if (!detail) { setFailure('Helmet camera imagery could not be loaded.'); return; }
-      texture.dispose();
-      texture = loader.load(regionAsset(region, 'optical.webp'), loaded, undefined, () => {
-        if (!disposed) setFailure('Helmet camera imagery could not be loaded.');
-      });
-    });
-    function loaded(loaded: THREE.Texture) {
-      if (disposed) return;
+    const projectedGuide = new THREE.Vector3();
+
+    function positionGuide(guide: LocalPoint | undefined) {
+      const marker = guideMarker.current;
+      if (!marker || !guide) return;
+      const elevation = sampleElevation(grid, frame, guide) ?? sampleElevation(terrain, frame, guide);
+      if (elevation === null) {
+        marker.hidden = true;
+        return;
+      }
+      projectedGuide.set(...worldPoint(frame, guide, elevation + 0.35)).applyMatrix4(camera.matrixWorldInverse);
+      if (projectedGuide.z >= -camera.near) {
+        projectedGuide.set(projectedGuide.x < 0 ? -2 : 2, 0, 0);
+      } else {
+        projectedGuide.applyMatrix4(camera.projectionMatrix);
+      }
+      const { x, y } = projectedGuide;
+      // Keep the direction cue clear of the compass and resource readouts.
+      const clampedX = THREE.MathUtils.clamp(x, -0.82, 0.82);
+      const clampedY = THREE.MathUtils.clamp(y, -0.28, 0.48);
+      const edge = x !== clampedX || y !== clampedY;
+      marker.hidden = false;
+      marker.dataset.edge = String(edge);
+      marker.style.left = `${50 + clampedX * 50}%`;
+      marker.style.top = `${50 - clampedY * 50}%`;
+      marker.style.setProperty('--guide-angle', `${edge ? Math.atan2(clampedY - y, (x - clampedX) * camera.aspect) : 0}rad`);
+    }
+
+    function requestFrame() {
+      if (!disposed && !contextLost && frameRequest === null) frameRequest = window.requestAnimationFrame(render);
+    }
+
+    function render(time: number) {
+      frameRequest = null;
+      if (disposed || contextLost) return;
+      if (time < nextFrameAt - 1) {
+        requestFrame();
+        return;
+      }
+      const { point, heading, sun, relief, shadowed, walking, distanceM } = live.current;
+      if (!element?.clientWidth || !element.clientHeight) return;
+      const pose = helmetPose(grid, frame, point, heading) ?? helmetPose(terrain, frame, point, heading);
+      if (!pose) return;
+
+      const daylight = THREE.MathUtils.smoothstep(sun.up, -0.12, 0.21);
+      fog.color.copy(dustNight).lerp(dustDay, daylight);
+      sky.material.uniforms.dustColor.value.copy(fog.color);
+      sky.material.uniforms.daylight.value = daylight;
+      sky.material.uniforms.sunDirection.value.set(sun.east, sun.up, -sun.north).normalize();
+      ambient.intensity = relief ? 0.95 : 0.11 + 0.88 * daylight;
+      sunlight.position.set(sun.east, sun.up, -sun.north);
+      sunlight.intensity = sun.up > 0 ? (shadowed ? 0.18 : 2.2) * Math.sqrt(daylight) : 0;
+      if (relief) {
+        sunlight.position.set(-1, 0.67, 0.45);
+        sunlight.intensity = 2.2;
+      }
+      const material = relief ? reliefMaterial : opticalMaterial;
+      if (terrainMaterial !== material) {
+        for (const tile of terrainTiles.children) (tile as THREE.Mesh).material = material;
+        terrainMaterial = material;
+      }
+
+      const step = helmetStep(distanceM, walking && !reducedMotion.matches);
+      camera.position.set(pose.position[0], pose.position[1] + step.height * frame.northScale, pose.position[2]);
+      camera.rotation.z = step.roll;
+      let turning = false;
+      if (pose.yaw !== null) {
+        const delta = pose.yaw - camera.rotation.y;
+        const turn = Math.atan2(Math.sin(delta), Math.cos(delta));
+        turning = positioned && !reducedMotion.matches && Math.abs(turn) > 0.002;
+        const blend = turning ? 1 - Math.exp(-Math.min(100, time - (lastFrameTime ?? time)) / 135) : 1;
+        camera.rotation.y += turn * blend;
+      }
+      positioned = true;
+      sky.position.copy(camera.position);
+      const bearing = THREE.MathUtils.euclideanModulo(Math.round(-THREE.MathUtils.radToDeg(camera.rotation.y)), 360);
+      const readout = bearingReadout.current;
+      if (readout && readout.dataset.bearing !== String(bearing)) {
+        readout.dataset.bearing = String(bearing);
+        readout.textContent = `${String(bearing).padStart(3, '0')}°`;
+        readout.parentElement?.style.setProperty('--bearing-offset', `${(bearing % 10) * 1.2}px`);
+      }
+      renderer.render(scene, camera);
+      positionGuide(live.current.guide);
+      lastFrameTime = time;
+      nextFrameAt = Math.max(nextFrameAt + helmetFrameInterval, time + helmetFrameInterval - 2);
+      if (turning) requestFrame();
+    }
+
+    function useTerrainImage(loaded: THREE.Texture, imageryM: number) {
+      if (disposed) {
+        loaded.dispose();
+        return;
+      }
+      texture?.dispose();
+      texture = loaded;
       loaded.colorSpace = THREE.SRGBColorSpace;
-      loaded.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+      loaded.anisotropy = anisotropy;
       opticalMaterial.map = loaded;
       opticalMaterial.color.set('#ffffff');
       opticalMaterial.needsUpdate = true;
+      onSurfaceData({ elevationM: grid.cellM, imageryM });
       setReady(true);
+      requestFrame();
     }
 
+    const loadOverview = () => {
+      if (disposed) return;
+      loader.load(regionAsset(region, 'optical.webp'), (loaded) => useTerrainImage(loaded, 1), undefined, () => {
+        if (disposed) return;
+        onSurfaceData({ elevationM: grid.cellM, imageryM: null });
+        setReady(true);
+        requestFrame();
+      });
+    };
+    if (detail) {
+      loader.load(regionAsset(region, 'helmet-optical.webp'), (loaded) => useTerrainImage(loaded, 0.5), undefined, loadOverview);
+    } else {
+      loadOverview();
+    }
+
+    redraw.current = requestFrame;
     const observer = new ResizeObserver(() => {
-      if (!element.clientWidth || !element.clientHeight) return;
-      camera.aspect = element.clientWidth / element.clientHeight;
+      const { clientWidth, clientHeight } = element;
+      if (!clientWidth || !clientHeight || contextLost) return;
+      camera.aspect = clientWidth / clientHeight;
       camera.updateProjectionMatrix();
-      renderer.setSize(element.clientWidth, element.clientHeight);
+      // Keep the square inset sharp on desktop without oversampling high-DPI devices.
+      renderer.setPixelRatio(Math.min(2.5, 600 / Math.max(clientWidth, clientHeight), Math.max(1.75, window.devicePixelRatio)));
+      renderer.setSize(clientWidth, clientHeight, false);
+      requestFrame();
     });
     observer.observe(element);
     function lost(event: Event) {
       event.preventDefault();
+      contextLost = true;
       setFailure('The helmet camera graphics context was lost.');
     }
     renderer.domElement.addEventListener('webglcontextlost', lost);
-    let frameTime: number | undefined;
-    renderer.setAnimationLoop((time) => {
-      const { point, heading, sun, relief } = live.current;
-      const pose = element.clientWidth && element.clientHeight ? helmetPose(grid, frame, point, heading) ?? helmetPose(terrain, frame, point, heading) : null;
-      if (pose) {
-        mesh.material = relief ? reliefMaterial : opticalMaterial;
-        if (relief) {
-          sunlight.position.set(-1, 0.67, 0.45);
-          sunlight.intensity = 2.2;
-        } else {
-          sunlight.position.set(sun.east, sun.up, -sun.north);
-          sunlight.intensity = sun.up > 0 ? live.current.shadowed ? 0.35 : 1.65 : 0;
-        }
-        camera.position.set(...pose.position);
-        if (pose.yaw !== null) {
-          const delta = pose.yaw - camera.rotation.y;
-          const blend = frameTime === undefined ? 1 : 1 - Math.exp(-Math.min(80, time - frameTime) / 135);
-          camera.rotation.y += Math.atan2(Math.sin(delta), Math.cos(delta)) * blend;
-        }
-        const bearing = THREE.MathUtils.euclideanModulo(Math.round(-THREE.MathUtils.radToDeg(camera.rotation.y)), 360);
-        const readout = bearingReadout.current;
-        if (readout && readout.dataset.bearing !== String(bearing)) {
-          readout.dataset.bearing = String(bearing);
-          readout.textContent = `${String(bearing).padStart(3, '0')}°`;
-          readout.parentElement?.style.setProperty('--bearing-offset', `${(bearing % 10) * 1.2}px`);
-        }
-        renderer.render(scene, camera);
-      }
-      frameTime = time;
-    });
+    reducedMotion.addEventListener('change', requestFrame);
     return () => {
       disposed = true;
-      renderer.setAnimationLoop(null);
+      redraw.current = null;
+      if (frameRequest !== null) window.cancelAnimationFrame(frameRequest);
       observer.disconnect();
+      reducedMotion.removeEventListener('change', requestFrame);
       renderer.domElement.removeEventListener('webglcontextlost', lost);
-      texture.dispose();
+      texture?.dispose();
+      surfaceDetail.dispose();
       opticalMaterial.dispose();
       reliefMaterial.dispose();
-      mesh.geometry.dispose();
+      for (const tile of terrainTiles.children) (tile as THREE.Mesh).geometry.dispose();
+      sky.geometry.dispose();
+      sky.material.dispose();
       renderer.dispose();
       renderer.forceContextLoss();
       renderer.domElement.remove();
     };
-  }, [terrain, frame, grid, region, detail]);
+  }, [terrain, frame, grid, region, detail, onSurfaceData]);
   return <>
     <div className="helmet-scene" ref={container} />
     {failure && <div className="relief-status" role="alert"><span>{failure}</span><button className="button" onClick={onFallback}>Hide camera</button></div>}
@@ -233,10 +390,7 @@ export function HelmetView({ terrain, point, heading, relief, sun, shadowed, gra
         <span className="helmet-compass-ticks" aria-hidden="true" />
       </div>
       <span className="helmet-crosshair" aria-hidden="true" />
-      <div className="helmet-hud-bottom">
-        <span title="Terrain grade along the traverse">Grade {grade === undefined ? '—' : `${grade > 0 ? '+' : ''}${grade.toFixed(1)}°`}</span>
-        <span title="Elevation grid spacing">{grid.cellM} m DEM</span>
-      </div>
+      {guide && <span ref={guideMarker} className="helmet-guide" role="img" aria-label="Next point on the EVA route" hidden />}
     </div>}
   </>;
 }
@@ -378,32 +532,38 @@ export default function ReliefMap(props: Props) {
     const viewAxis = new THREE.Vector3(0.48, 0.70, 0.66).normalize();
     const right = new THREE.Vector3(0, 1, 0).cross(viewAxis).normalize();
     const up = new THREE.Vector3().crossVectors(viewAxis, right);
+    const positions = mesh.geometry.getAttribute('position');
+    const vertex = new THREE.Vector3();
+    const defaultPosition = new THREE.Vector3();
     const reset = () => {
-      const vertical = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * 0.83;
-      const horizontal = vertical * camera.aspect;
+      const halfFov = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+      const vertical = halfFov * 0.94;
+      const horizontal = halfFov * camera.aspect * 0.90;
       let distance = 0;
-      for (const x of [terrainBounds.min.x, terrainBounds.max.x]) {
-        for (const y of [terrainBounds.min.y, terrainBounds.max.y]) {
-          for (const z of [terrainBounds.min.z, terrainBounds.max.z]) {
-            const corner = new THREE.Vector3(x, y, z).sub(focus);
-            const depth = corner.dot(viewAxis);
-            distance = Math.max(distance, depth + Math.abs(corner.dot(right)) / horizontal,
-              depth + Math.abs(corner.dot(up)) / vertical);
-          }
-        }
+      // Fit the surface itself, including the high points that constrain this view.
+      for (let i = 0; i < positions.count; i++) {
+        vertex.fromBufferAttribute(positions, i).sub(focus);
+        const depth = vertex.dot(viewAxis);
+        distance = Math.max(distance, depth + Math.abs(vertex.dot(right)) / horizontal,
+          depth + Math.abs(vertex.dot(up)) / vertical);
       }
       controls.maxDistance = distance * 2;
       camera.far = Math.max(900, distance * 3);
       camera.updateProjectionMatrix();
       controls.target.copy(focus);
-      camera.position.copy(focus).addScaledVector(viewAxis, distance);
+      defaultPosition.copy(focus).addScaledVector(viewAxis, distance);
+      camera.position.copy(defaultPosition);
       controls.update();
     };
     const resize = () => {
       const width = Math.max(1, element.clientWidth);
       const height = Math.max(1, element.clientHeight);
-      camera.aspect = width / height;
-      camera.updateProjectionMatrix();
+      const aspect = width / height;
+      const refit = aspect !== camera.aspect && camera.position.distanceToSquared(defaultPosition) < 1e-6 &&
+        controls.target.distanceToSquared(focus) < 1e-6;
+      camera.aspect = aspect;
+      if (refit) reset();
+      else camera.updateProjectionMatrix();
       renderer.setSize(width, height);
     };
     const resizeObserver = new ResizeObserver(resize);

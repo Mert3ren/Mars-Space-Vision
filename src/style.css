@@ -328,6 +328,8 @@ main { max-width: 1680px; padding: 0 16px; }
 .map-stage { height: clamp(420px, 54vh, 670px); background: #111c2c; }
 .terrain-map { background: #111c2c; }
 .optical-imagery { filter: saturate(.82) sepia(.22) brightness(.98) contrast(1.1); }
+.context-imagery { filter: saturate(.65) sepia(.18) brightness(.78) contrast(1.04); }
+.map-alternate-route { cursor: pointer; }
 .map-footer { background: #0c1523; color: #a8bed5; }
 .leaflet-tooltip.base-label, .leaflet-tooltip.target-label { color: #f2f7ff; background: #0c1728f5; border-color: #5d7b9a; padding: 5px 8px; }
 .map-corner { right: 12px; top: 12px; }
@@ -637,7 +639,7 @@ main { max-width: 1680px; padding: 0 16px; }
 .helmet-stage { position: relative; isolation: isolate; background: linear-gradient(#59485a 0%, #a07768 44%, #cb9778 78%, #a9745a); }
 .helmet-scene, .helmet-scene canvas { display: block; width: 100%; height: 100%; }
 .helmet-hud {
-  position: absolute; inset: 0; pointer-events: none; color: #dafff0;
+  position: absolute; inset: 0; z-index: 1; pointer-events: none; color: #dafff0;
   font: 600 10px/1.2 "IBM Plex Mono", Consolas, monospace;
   font-variant-numeric: tabular-nums; text-shadow: 0 1px 2px #071713, 0 0 4px #071713;
 }
@@ -655,8 +657,43 @@ main { max-width: 1680px; padding: 0 16px; }
   background: linear-gradient(to right, currentColor 33%, transparent 33% 67%, currentColor 67%);
 }
 .helmet-crosshair::after { transform: rotate(90deg); }
-.helmet-hud-bottom { position: absolute; bottom: 6px; inset-inline: 7px; display: flex; justify-content: space-between; gap: 4px; text-transform: uppercase; }
-.helmet-hud-bottom > :last-child { color: #e1eee7; }
+.helmet-guide {
+  position: absolute; width: 10px; height: 10px; color: #8fffe3;
+  transform: translate(-50%, -50%) rotate(var(--guide-angle, 0rad));
+  filter: drop-shadow(0 1px 2px #061614) drop-shadow(0 0 1px #061614);
+}
+.helmet-guide::before {
+  content: ''; position: absolute; inset: 1px;
+  border: 1px solid currentColor; border-radius: 1px; transform: rotate(45deg);
+}
+.helmet-guide[data-edge=true]::before {
+  border-width: 2px 2px 0 0; border-radius: 0;
+}
+.helmet-vitals {
+  position: absolute; inset: 0; pointer-events: none; color: #e6fff6;
+  font: 600 11px/1.25 "IBM Plex Mono", Consolas, monospace;
+  font-variant-numeric: tabular-nums; text-shadow: 0 1px 2px #071713;
+}
+.helmet-vitals dl, .helmet-details dl { margin: 0; }
+.helmet-vitals dd, .helmet-details dd { margin: 0; font-weight: 700; }
+.helmet-vitals dt, .helmet-details dt { color: #bfcfd8; }
+.helmet-vitals [data-low=true] dd { color: var(--critical-text); }
+.helmet-vitals-resources {
+  position: absolute; inset: 0 0 auto; display: flex; justify-content: space-between; gap: 4px;
+  padding: 6px; background: linear-gradient(#07121be6, #07121b00);
+}
+.helmet-vitals-resources > div:last-child { text-align: right; }
+.helmet-vitals-bottom {
+  position: absolute; inset: auto 0 0; display: grid; gap: 4px;
+  padding: 14px 6px 6px; background: linear-gradient(#07121b00, #07121bea 42%);
+}
+.helmet-vitals-nav { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 7px; }
+.helmet-warnings { justify-self: start; padding: 2px 4px; border-left: 2px solid #ffbb70; background: #211610e8; color: #ffdba8; }
+.helmet-details { background: #0c1927; border-top: 1px solid #415875; padding: 6px 8px; font-size: 11px; overflow: auto; max-height: 172px; }
+.helmet-details strong { display: block; margin-bottom: 5px; }
+.helmet-details dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 7px; }
+.helmet-details dd { overflow-wrap: anywhere; }
+.helmet-detail-wide { grid-column: 1 / -1; }
 .mission-editor-content { display: grid; gap: 9px; padding: 10px; min-width: 0; }
 .mission-field { display: grid; gap: 4px; min-width: 0; color: var(--muted); font-size: 11px; }
 .mission-field input, .mission-field select {
@@ -730,7 +767,12 @@ main { max-width: 1680px; padding: 0 16px; }
 .relief-map-symbol { position: absolute; z-index: 1; transform: translate(-50%, -50%); visibility: hidden; pointer-events: none; }
 .relief-map-symbol a { pointer-events: auto; }
 .relief-map-astronaut { z-index: 2; }
-.relief-stop-label { position: absolute; left: 50%; bottom: calc(100% + 5px); transform: translateX(-50%); max-width: 130px; padding: 3px 5px; color: #c2f6ea; background: #101b27; border: 1px solid #4b837f; border-radius: 3px; font-size: 10px; text-align: center; overflow-wrap: anywhere; }
+.relief-stop-label {
+  position: absolute; left: 50%; bottom: calc(100% + 5px); transform: translateX(-50%);
+  width: max-content; max-width: min(220px, 60vw); padding: 3px 5px;
+  color: #c2f6ea; background: #101b27; border: 1px solid #4b837f; border-radius: 3px;
+  font-size: 10px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 
 @media (min-width: 1180px) {
@@ -780,6 +822,7 @@ main { max-width: 1680px; padding: 0 16px; }
 .dashboard--simulation.dashboard--spe .workspace-col { grid-area: 2 / 1; }
 .dashboard--simulation.dashboard--spe .primary-col { grid-area: 1 / 1; }
 .dashboard--simulation .map-stage--live { height: max(565px, calc(100dvh - 115px)); max-height: 1100px; }
+.dashboard--simulation .map-stage--live:has(.helmet-details) { min-height: 720px; }
 .map-stage--live { --camera-size: clamp(220px, 22vw, 320px); }
 .map-stage--live .helmet-panel {
   position: absolute; right: 12px; bottom: 66px; z-index: 4; width: var(--camera-size);
@@ -788,9 +831,10 @@ main { max-width: 1680px; padding: 0 16px; }
 }
 .map-stage--live .helmet-stage { height: auto; aspect-ratio: 1; }
 .helmet-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 3px; padding: 4px 6px; font-size: 11px; font-weight: 700; }
-.helmet-toolbar span, .helmet-toolbar button { display: inline-flex; align-items: center; gap: 4px; }
+.helmet-toolbar span, .helmet-toolbar button, .helmet-toolbar-actions { display: inline-flex; align-items: center; gap: 4px; }
+.helmet-toolbar small { font: 600 9px Consolas, monospace; color: #a7cdd4; }
 .helmet-toolbar button { min-height: 24px; padding: 3px 5px; background: #142b3b; color: var(--text); border: 1px solid #426372; border-radius: 4px; cursor: pointer; font: inherit; }
-.helmet-toolbar button[aria-pressed=true] { color: var(--acid); }
+.helmet-toolbar button[aria-pressed=true], .helmet-toolbar button[aria-expanded=true] { color: var(--acid); }
 .map-stage--live .map-corner { z-index: 2; right: calc(var(--camera-size) + 24px); top: auto; bottom: 68px; }
 .map-stage--live .relief-caption { display: none; }
 .map-stage--live .layer-note { max-width: calc(100% - var(--camera-size) - 83px); bottom: 66px; }
@@ -834,7 +878,7 @@ main { max-width: 1680px; padding: 0 16px; }
   .map-stage--live .map-corner, .map-stage--live .layer-note { bottom: 96px; }
 }
 @media (max-width: 720px) {
-  .map-stage--live { --camera-size: clamp(112px, 31vw, 160px); }
+  .map-stage--live { --camera-size: clamp(152px, 40vw, 190px); }
   .dashboard--simulation .map-stage--live { height: max(505px, calc(100dvh - 260px)); }
   .map-stage--live .helmet-panel { right: 6px; bottom: 94px; }
   .map-stage--live .map-corner { bottom: 96px; right: calc(var(--camera-size) + 14px); }
@@ -849,11 +893,18 @@ main { max-width: 1680px; padding: 0 16px; }
   .map-stage--live .eva-controls .button, .map-stage--live .eva-controls .leg-switch button { font-size: 10px; padding: 4px 5px; }
   .helmet-toolbar { font-size: 9px; }
   .helmet-hud { font-size: 8px; }
-  .helmet-hud-bottom { inset-inline: 4px; }
-  .helmet-toolbar { padding: 2px 3px; flex-wrap: nowrap; white-space: nowrap; }
+  .helmet-vitals { font-size: 9px; }
+  .helmet-vitals-bottom { gap: 2px; padding: 5px 5px 3px; }
+  .helmet-radio { width: 100%; display: flex; justify-content: space-between; gap: 4px; }
+  .helmet-toolbar { padding: 2px 3px; flex-wrap: nowrap; white-space: nowrap; gap: 2px; }
+  .helmet-toolbar-actions { gap: 2px; }
   .helmet-toolbar button { padding-inline: 3px; }
-  .helmet-toolbar button svg { width: 11px; }
+  .helmet-toolbar button svg { display: none; }
+  .helmet-toolbar button:last-child svg { display: block; width: 11px; }
   .helmet-toolbar span svg { display: none; }
+  .helmet-toolbar span { gap: 2px; }
+  .helmet-toolbar small { font-size: 8px; }
+  .helmet-details { font-size: 10px; }
 }
 @media (max-width: 360px) {
   .map-stage--live .helmet-panel, .map-stage--live .map-corner, .map-stage--live .layer-note { bottom: 132px; }

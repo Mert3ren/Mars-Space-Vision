@@ -8,6 +8,7 @@ import type { GridOverlay } from './terrainWorker';
 import { regionAsset, regionLabels } from './regionAssets';
 import { cellAt, cellCenter, displayPosition, localPoint } from './mission';
 import { cameraLocation, cameraStops, stations } from './galeRoutes';
+import type { RouteId, RouteOption } from './galeRoutes';
 import galeOverview from './galeOverview.json';
 import curiosityTrack from './curiosityTrack.json';
 
@@ -77,6 +78,12 @@ export type MapProps = {
   command: MapCommand;
 };
 
+type TerrainMapProps = MapProps & {
+  routes: RouteOption[];
+  selectedRoute?: RouteId;
+  onSelectRoute: (route: RouteId) => void;
+};
+
 const asset = (path: string) => `${import.meta.env.BASE_URL}gale/${path}`;
 
 export function gridOverlayImage(grid: GridOverlay, kind: 'reserve' | 'shadow') {
@@ -104,6 +111,21 @@ function fitScope(map: L.Map, bounds: L.LatLngBounds) {
   const size = map.getSize();
   const padding = Math.max(12, Math.round(Math.min(size.x, size.y) * 0.045));
   map.fitBounds(bounds, { padding: [padding, padding], animate: false });
+}
+
+function fitTraverse(map: L.Map, extent: L.LatLngBounds, props: MapProps) {
+  const { terrain, start, target, activeLeg, evaPoints, missionPins, missionReturnPoints } = props;
+  const route = L.latLngBounds([pointToLatLng(cellCenter(terrain, start))]);
+  for (const point of evaPoints ?? activeLeg?.path.map((cell) => cellCenter(terrain, cell)) ?? []) {
+    route.extend(pointToLatLng(point));
+  }
+  for (const { point } of missionPins ?? []) route.extend(pointToLatLng(point));
+  for (const point of missionReturnPoints ?? []) route.extend(pointToLatLng(point));
+  if (!evaPoints && !missionPins) route.extend(pointToLatLng(cellCenter(terrain, target)));
+  const size = map.getSize();
+  const padding = Math.round(Math.min(size.x, size.y) * 0.12);
+  const maxZoom = map.getBoundsZoom(extent) + 0.35;
+  map.fitBounds(route.pad(0.15), { padding: [padding, padding], maxZoom, animate: false });
 }
 
 function scopeMarker(point: L.LatLng, label: string, open: () => void) {
@@ -146,9 +168,10 @@ function assetPopup(name: string, category: string, detail: string) {
   return card;
 }
 
-export function TerrainMap(props: MapProps) {
-  const { terrain, slopes, start, target, activeLeg, activeColor, activeDashed, activeDirection, layer, slopeLimit, scope, expanded, opacity,
-    evaPoint, evaPoints, shelterPins, missionPins, missionReturnPoints, reserveOverlay, shadowOverlay, heading, mode, inspection, showRover, showStations, command } = props;
+export function TerrainMap(props: TerrainMapProps) {
+  const { terrain, slopes, start, target, activeLeg, activeColor, activeDashed, activeDirection, layer, slopeLimit, scope, opacity,
+    evaPoint, evaPoints, shelterPins, missionPins, missionReturnPoints, reserveOverlay, shadowOverlay, heading, mode,
+    inspection, showRover, showStations, command, routes, selectedRoute, onSelectRoute } = props;
   const callbacks = useRef(props);
   callbacks.current = props;
   const element = useRef<HTMLDivElement>(null);
@@ -192,12 +215,11 @@ export function TerrainMap(props: MapProps) {
     };
     for (const type of ['crater', 'region', 'traverse'] as const) {
       const pane = map.createPane(`${type}Imagery`);
-      pane.style.zIndex = '220';
-      pane.style.display = type === callbacks.current.scope ? '' : 'none';
+      pane.style.zIndex = type === 'traverse' ? '230' : '220';
       pane.style.pointerEvents = 'none';
       L.imageOverlay(type === 'traverse' ? regionAsset(terrain.region ?? 'gale', images[type].image) : asset(images[type].image), scopes[type], {
         alt: images[type].alt,
-        className: 'optical-imagery',
+        className: type === 'traverse' ? 'optical-imagery' : 'optical-imagery context-imagery',
         pane: `${type}Imagery`,
       }).addTo(map);
     }
@@ -210,8 +232,7 @@ export function TerrainMap(props: MapProps) {
     const observer = new ResizeObserver(([entry]) => {
       const { width, height } = entry.contentRect;
       if (!width || !height) return;
-      map.invalidateSize({ animate: false, pan: false });
-      fitScope(map, scopes[callbacks.current.scope]);
+      map.invalidateSize({ animate: false });
     });
     observer.observe(element.current);
     map.on('click', (event: L.LeafletMouseEvent) => {
@@ -247,15 +268,17 @@ export function TerrainMap(props: MapProps) {
 
   useEffect(() => {
     const map = instance.current;
-    const extent = viewBounds.current?.[scope];
-    if (!map || !extent) return;
+    const scopes = viewBounds.current;
+    if (!map || !scopes) return;
+    const context = terrain.region === 'boxwork' ? 'crater' : 'region';
     for (const type of ['crater', 'region', 'traverse'] as const) {
-      map.getPane(`${type}Imagery`)!.style.display = scope === type ? '' : 'none';
+      const visible = type === scope || (scope === 'traverse' && type === context);
+      map.getPane(`${type}Imagery`)!.style.display = visible ? '' : 'none';
     }
-    map.setMaxBounds(extent.pad(0.12));
-    map.invalidateSize({ animate: false, pan: false });
-    fitScope(map, extent);
-  }, [scope, expanded, terrain]);
+    map.setMaxBounds(scope === 'traverse' ? scopes[context] : scopes[scope].pad(0.12));
+    if (scope === 'traverse') fitTraverse(map, scopes.traverse, callbacks.current);
+    else fitScope(map, scopes[scope]);
+  }, [scope, terrain]);
 
   useEffect(() => {
     const map = instance.current;
@@ -308,6 +331,15 @@ export function TerrainMap(props: MapProps) {
     const basePoint = pointToLatLng(cellCenter(terrain, start));
     const goalPoint = pointToLatLng(cellCenter(terrain, target));
     const points = evaPoints?.map(pointToLatLng) ?? activeLeg?.path.map((cell) => pointToLatLng(cellCenter(terrain, cell)));
+    if (!mode) {
+      routes.filter((route) => route.id !== selectedRoute).forEach((route) => {
+        L.polyline(route[activeDirection].path.map((cell) => pointToLatLng(cellCenter(terrain, cell))), {
+          color: route.color, weight: 3, dashArray: '6 7', bubblingMouseEvents: false,
+          className: 'map-alternate-route',
+        }).bindTooltip(`Route ${route.code} · ${route.name}`)
+          .on('click', () => callbacks.current.onSelectRoute(route.id)).addTo(group);
+      });
+    }
     if (missionReturnPoints && missionReturnPoints.length > 1) {
       L.polyline(missionReturnPoints.map(pointToLatLng), { color: routeOutline, weight: 7, interactive: false }).addTo(group);
       L.polyline(missionReturnPoints.map(pointToLatLng), { color: routeColor.back, weight: 3, dashArray: '7 6', interactive: false }).addTo(group);
@@ -322,7 +354,7 @@ export function TerrainMap(props: MapProps) {
       const [ey, ex] = points[Math.min(index + 1, points.length - 1)];
       const angle = Math.atan2(y - ey, ex - x) * 180 / Math.PI;
       L.marker(points[index], {
-        interactive: false,
+        interactive: false, keyboard: false,
         icon: L.divIcon({
           className: 'map-arrow', iconSize: [26, 26],
           html: `<span style="transform:rotate(${angle}deg);color:${color}">➜</span>`,
@@ -332,7 +364,10 @@ export function TerrainMap(props: MapProps) {
     L.marker(basePoint, { icon: markerIcon('base'), interactive: false, keyboard: false })
       .addTo(group).bindTooltip('Base camp', { permanent: true, direction: 'top', offset: [0, -16], className: 'base-label' });
     if (!missionPins) L.marker(goalPoint, { icon: markerIcon('science'), interactive: false, keyboard: false })
-      .addTo(group).bindTooltip('Science stop', { permanent: true, direction: 'top', offset: [0, -16], className: 'target-label' });
+      .addTo(group).bindTooltip('Science stop', {
+        permanent: !evaPoints || (activeDirection === 'out' && shelterPins.length === 0),
+        direction: 'top', offset: [0, -16], className: 'target-label',
+      });
     for (const { id, point, label, status } of missionPins ?? []) {
       const marker = L.marker(pointToLatLng(point), {
         interactive: !mode, keyboard: !mode, zIndexOffset: status === 'active' ? 810 : 740,
@@ -351,8 +386,12 @@ export function TerrainMap(props: MapProps) {
       }).addTo(group);
       marker.getElement()?.setAttribute('role', 'img');
       marker.getElement()?.setAttribute('aria-label', `Terrain cover candidate ${id}`);
+      if (selected) marker.bindTooltip(`Candidate ${id}`, {
+        permanent: true, direction: 'top', offset: [0, -15], className: 'target-label',
+      });
     }
-  }, [terrain, start, target, activeLeg, activeColor, activeDashed, activeDirection, scope, evaPoints, shelterPins, missionPins, missionReturnPoints, mode]);
+  }, [terrain, start, target, activeLeg, activeColor, activeDashed, activeDirection, scope, evaPoints, shelterPins, missionPins,
+    missionReturnPoints, mode, routes, selectedRoute]);
 
   useEffect(() => {
     const map = instance.current;
@@ -392,7 +431,7 @@ export function TerrainMap(props: MapProps) {
     if (!showStations || scope === 'crater' || mode) return;
     for (const station of terrain.region === 'boxwork' ? [] : stations) {
       assetPin('station', station.name, pointToLatLng(station.point))
-        .bindTooltip(station.name, { permanent: scope === 'traverse', direction: 'bottom', offset: [0, 11], className: 'place-label' })
+        .bindTooltip(station.name, { direction: 'bottom', offset: [0, 11], className: 'place-label' })
         .bindPopup(assetPopup(station.name, 'SIMULATED EVA STATION', station.detail))
         .addTo(group);
     }
@@ -434,7 +473,8 @@ export function TerrainMap(props: MapProps) {
     const extent = viewBounds.current?.[callbacks.current.scope];
     if (!command.id || !map || !extent) return;
     if (command.type === 'reset') {
-      fitScope(map, extent);
+      if (callbacks.current.scope === 'traverse') fitTraverse(map, extent, callbacks.current);
+      else fitScope(map, extent);
     } else if (command.type === 'locate') {
       if (callbacks.current.scope !== 'traverse') return;
       const fittedZoom = map.getBoundsZoom(extent, false, L.point(28, 28));
